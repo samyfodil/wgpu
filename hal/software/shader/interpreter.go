@@ -18,6 +18,7 @@
 package shader
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 )
@@ -40,6 +41,17 @@ func (m *Module) Execute(entryPoint string, inputs map[uint32]Value) (map[uint32
 // ExecuteWithContext runs the named entry point with full resource context.
 // The context provides bound buffers, textures, and samplers for the shader.
 func (m *Module) ExecuteWithContext(entryPoint string, ctx *ExecutionContext) (map[uint32]Value, error) {
+	return m.ExecuteWithDebug(entryPoint, ctx, nil)
+}
+
+// ExecuteWithDebug runs the named entry point with full resource context and
+// optional debug support. When debug is nil, execution proceeds at full speed
+// with zero overhead -- the existing Execute and ExecuteWithContext methods
+// call this with debug=nil.
+//
+// When debug is non-nil, the interpreter fires callbacks for breakpoints,
+// variable watches, and instruction tracing. See DebugContext for details.
+func (m *Module) ExecuteWithDebug(entryPoint string, ctx *ExecutionContext, debug *DebugContext) (map[uint32]Value, error) {
 	if ctx == nil {
 		ctx = &ExecutionContext{}
 	}
@@ -61,6 +73,7 @@ func (m *Module) ExecuteWithContext(entryPoint string, ctx *ExecutionContext) (m
 		ctx:    ctx,
 		values: make(map[uint32]Value, m.Bound),
 		labels: make(map[uint32]int),
+		debug:  debug,
 	}
 
 	// Seed constants into the value map.
@@ -126,6 +139,10 @@ type interpreter struct {
 
 	// returnValue holds the value from OpReturnValue for function calls.
 	returnValue Value
+
+	// debug holds the debug context for breakpoints, tracing, and watch variables.
+	// When nil, all debug logic is skipped (zero overhead on the hot path).
+	debug *DebugContext
 }
 
 // initVariables sets up input, output, and function-local variables.
@@ -471,15 +488,79 @@ func zeroValueForVar(m *Module, ptrTypeID uint32) Value {
 	return Uint32(0)
 }
 
+// errDebugAbort is a sentinel error returned when a debug callback requests DebugAbort.
+var errDebugAbort = fmt.Errorf("spirv: execution aborted by debug callback")
+
 // run executes instructions sequentially, handling OpBranch for jumps.
 //
-//nolint:maintidx,unparam // Opcode dispatch switch is inherently large. Error return is API contract for future opcodes.
+//nolint:maintidx // Opcode dispatch switch is inherently large.
 func (interp *interpreter) run() error {
 	instructions := interp.fn.Instructions
 	pc := 0
+	debug := interp.debug
+
+	// Debug state -- only initialized when debug is non-nil.
+	// This keeps the hot path (debug==nil) completely free of debug overhead.
+	var (
+		stepping bool
+		traceEnc *json.Encoder
+		traceEnt *traceEntry
+	)
+	if debug != nil {
+		if debug.TraceEnabled && debug.TraceWriter != nil {
+			traceEnc = json.NewEncoder(debug.TraceWriter)
+			traceEnt = &traceEntry{}
+		}
+	}
 
 	for pc < len(instructions) {
 		inst := instructions[pc]
+
+		// --- Debug: pre-instruction hooks ---
+		if debug != nil {
+			blockLabel := interp.currentBlockLabel(pc)
+			event := InstructionEvent{
+				PC:          pc,
+				Instruction: inst,
+				Values:      interp.values,
+				BlockLabel:  blockLabel,
+			}
+
+			// Breakpoint check.
+			if debug.Breakpoints != nil && debug.Breakpoints[pc] {
+				if debug.OnBreakpoint != nil {
+					debug.OnBreakpoint(event)
+				}
+				// After a breakpoint, switch to stepping mode so OnInstruction
+				// fires and the caller decides what to do next.
+				stepping = true
+			}
+
+			// Stepping or watch-triggered: fire OnInstruction.
+			if stepping && debug.OnInstruction != nil {
+				action := debug.OnInstruction(event)
+				switch action {
+				case DebugAbort:
+					return errDebugAbort
+				case DebugContinue:
+					stepping = false
+				case DebugStep:
+					stepping = true
+				}
+			}
+		}
+
+		// Capture the old value of the result ID for watch variable tracking.
+		// Only done when debug is active and watches are configured.
+		var watchOldValue Value
+		var watchResultID uint32
+		if debug != nil && len(debug.WatchVariables) > 0 && inst.ResultID != 0 {
+			if debug.WatchVariables[inst.ResultID] {
+				watchResultID = inst.ResultID
+				watchOldValue = interp.values[watchResultID]
+			}
+		}
+
 		pc++
 
 		switch inst.Opcode {
@@ -1149,6 +1230,24 @@ func (interp *interpreter) run() error {
 
 		default:
 			// Unknown opcodes are skipped. The triangle shader uses a small subset.
+		}
+
+		// --- Debug: post-instruction hooks ---
+		if debug != nil {
+			// Trace output: write one JSON line per result-producing instruction.
+			if traceEnc != nil && inst.ResultID != 0 {
+				writeTrace(debug.TraceWriter, traceEnc, traceEnt, pc-1, inst, interp.values)
+			}
+
+			// Watch variable tracking: check if a watched SSA ID changed value.
+			if watchResultID != 0 {
+				newValue := interp.values[watchResultID]
+				if !valuesEqual(watchOldValue, newValue) {
+					// Value changed -- force stepping so OnInstruction fires
+					// on the next iteration.
+					stepping = true
+				}
+			}
 		}
 	}
 
