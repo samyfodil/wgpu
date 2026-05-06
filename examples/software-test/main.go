@@ -59,7 +59,7 @@ func run() error {
 	return nil
 }
 
-func testCompute(device *wgpu.Device) error {
+func testCompute(device *wgpu.Device) error { //nolint:gocyclo,cyclop,funlen // linear test flow
 	fmt.Println("=== Test: Compute Shader (scaled copy) ===")
 
 	const wgsl = `
@@ -199,7 +199,7 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
 	if err := stagingBuf.Map(ctx, wgpu.MapModeRead, 0, n*4); err != nil {
 		return fmt.Errorf("map: %w", err)
 	}
-	defer stagingBuf.Unmap()
+	defer func() { _ = stagingBuf.Unmap() }()
 
 	rng, err := stagingBuf.MappedRange(0, n*4)
 	if err != nil {
