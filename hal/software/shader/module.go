@@ -31,11 +31,74 @@ type Module struct {
 	// Decorations maps (target ID, decoration kind) to decoration value.
 	Decorations map[decorationKey]uint32
 
+	// MemberDecorations maps (struct type ID, member index, decoration kind) to value.
+	// Used for OpMemberDecorate, primarily for struct member Offset decorations.
+	MemberDecorations map[memberDecorationKey]uint32
+
 	// Variables maps result ID to variable metadata.
 	Variables map[uint32]*VariableInfo
 
+	// FunctionsByID maps function result ID to function body.
+	// Used by OpFunctionCall to dispatch to non-entry-point functions.
+	FunctionsByID map[uint32]*Function
+
+	// ExtInstImports maps result ID to the imported instruction set name.
+	// The primary use is "GLSL.std.450" for math intrinsics.
+	ExtInstImports map[uint32]string
+
+	// ExecutionModes maps (function ID, execution mode) to operands.
+	// Used for LocalSize in compute shaders.
+	ExecutionModes map[executionModeKey][]uint32
+
 	// Bound is the upper bound of all IDs in the module.
 	Bound uint32
+}
+
+// memberDecorationKey uniquely identifies a member decoration.
+type memberDecorationKey struct {
+	StructTypeID uint32
+	MemberIndex  uint32
+	Decoration   uint32
+}
+
+// executionModeKey uniquely identifies an execution mode on a function.
+type executionModeKey struct {
+	FunctionID    uint32
+	ExecutionMode uint32
+}
+
+// BindingKey identifies a resource binding by descriptor set and binding number.
+type BindingKey struct {
+	Group   uint32
+	Binding uint32
+}
+
+// GetBinding returns the (group, binding) for a variable, or ok=false if not decorated.
+func (m *Module) GetBinding(varID uint32) (BindingKey, bool) {
+	bindKey := decorationKey{TargetID: varID, Decoration: DecorationBinding}
+	binding, hasBinding := m.Decorations[bindKey]
+	setKey := decorationKey{TargetID: varID, Decoration: DecorationDescriptorSet}
+	group, hasSet := m.Decorations[setKey]
+	if !hasBinding {
+		return BindingKey{}, false
+	}
+	if !hasSet {
+		group = 0 // Default descriptor set is 0.
+	}
+	return BindingKey{Group: group, Binding: binding}, true
+}
+
+// GetMemberOffset returns the byte offset of a struct member, or 0 if not decorated.
+func (m *Module) GetMemberOffset(structTypeID, memberIndex uint32) uint32 {
+	key := memberDecorationKey{
+		StructTypeID: structTypeID,
+		MemberIndex:  memberIndex,
+		Decoration:   DecorationOffset,
+	}
+	if v, ok := m.MemberDecorations[key]; ok {
+		return v
+	}
+	return 0
 }
 
 // TypeInfo describes a SPIR-V type.
@@ -65,6 +128,9 @@ const (
 	TypePointer
 	TypeFunction
 	TypeStruct
+	TypeImage
+	TypeSampler
+	TypeSampledImage
 )
 
 // EntryPoint describes a SPIR-V entry point.
@@ -111,13 +177,17 @@ func ParseModule(words []uint32) (*Module, error) {
 	}
 
 	m := &Module{
-		Types:       make(map[uint32]*TypeInfo),
-		Constants:   make(map[uint32]Value),
-		Functions:   make(map[string]*Function),
-		EntryPoints: make(map[string]*EntryPoint),
-		Decorations: make(map[decorationKey]uint32),
-		Variables:   make(map[uint32]*VariableInfo),
-		Bound:       words[3],
+		Types:             make(map[uint32]*TypeInfo),
+		Constants:         make(map[uint32]Value),
+		Functions:         make(map[string]*Function),
+		EntryPoints:       make(map[string]*EntryPoint),
+		Decorations:       make(map[decorationKey]uint32),
+		MemberDecorations: make(map[memberDecorationKey]uint32),
+		Variables:         make(map[uint32]*VariableInfo),
+		FunctionsByID:     make(map[uint32]*Function),
+		ExtInstImports:    make(map[uint32]string),
+		ExecutionModes:    make(map[executionModeKey][]uint32),
+		Bound:             words[3],
 	}
 
 	// Maps function ID to function body (built during parse, keyed to entry points later).
@@ -238,6 +308,24 @@ func ParseModule(words []uint32) (*Module, error) {
 			}
 			m.Types[operands[0]] = ti
 
+		case OpTypeImage:
+			// OpTypeImage: result sampledType dim depth arrayed ms sampled format [access]
+			if len(operands) >= 2 {
+				m.Types[operands[0]] = &TypeInfo{Kind: TypeImage, ElemType: operands[1]}
+			}
+
+		case OpTypeSampler:
+			// OpTypeSampler: result
+			if len(operands) >= 1 {
+				m.Types[operands[0]] = &TypeInfo{Kind: TypeSampler}
+			}
+
+		case OpTypeSampledImage:
+			// OpTypeSampledImage: result imageType
+			if len(operands) >= 2 {
+				m.Types[operands[0]] = &TypeInfo{Kind: TypeSampledImage, ElemType: operands[1]}
+			}
+
 		case OpConstant:
 			// OpConstant: resultType resultID literal...
 			if len(operands) < 2 {
@@ -304,6 +392,46 @@ func ParseModule(words []uint32) (*Module, error) {
 				m.Decorations[key] = operands[2]
 			} else {
 				m.Decorations[key] = 0
+			}
+
+		case OpMemberDecorate:
+			// OpMemberDecorate: structType member decoration [extra words]
+			if len(operands) < 3 {
+				break
+			}
+			key := memberDecorationKey{
+				StructTypeID: operands[0],
+				MemberIndex:  operands[1],
+				Decoration:   operands[2],
+			}
+			if len(operands) >= 4 {
+				m.MemberDecorations[key] = operands[3]
+			} else {
+				m.MemberDecorations[key] = 0
+			}
+
+		case OpExtInstImport:
+			// OpExtInstImport: resultID "name"
+			if len(operands) < 2 {
+				break
+			}
+			resultID := operands[0]
+			name, _ := decodeString(operands[1:])
+			m.ExtInstImports[resultID] = name
+
+		case OpExecutionMode:
+			// OpExecutionMode: entryPoint mode [extra words]
+			if len(operands) < 2 {
+				break
+			}
+			key := executionModeKey{
+				FunctionID:    operands[0],
+				ExecutionMode: operands[1],
+			}
+			if len(operands) > 2 {
+				extra := make([]uint32, len(operands)-2)
+				copy(extra, operands[2:])
+				m.ExecutionModes[key] = extra
 			}
 
 		case OpVariable:
@@ -374,6 +502,9 @@ func ParseModule(words []uint32) (*Module, error) {
 		}
 	}
 
+	// Store all functions by ID for OpFunctionCall dispatch.
+	m.FunctionsByID = funcsByID
+
 	return m, nil
 }
 
@@ -413,13 +544,29 @@ func decodeInstruction(opcode uint16, operands []uint32) Instruction {
 	switch opcode {
 	// Instructions with result type AND result ID (type resultID operands...).
 	case OpLoad, OpAccessChain, OpCompositeConstruct, OpCompositeExtract,
-		OpConvertUToF, OpConvertFToU, OpConvertSToF, OpBitcast,
-		OpFAdd, OpFSub, OpFMul, OpFDiv, OpFNegate,
-		OpIAdd, OpISub, OpIMul, OpSDiv, OpUDiv,
+		OpConvertUToF, OpConvertFToU, OpConvertSToF, OpConvertFToS, OpBitcast,
+		OpSConvert, OpUConvert, OpFConvert,
+		OpFAdd, OpFSub, OpFMul, OpFDiv, OpFNegate, OpFMod, OpFRem,
+		OpIAdd, OpISub, OpIMul, OpSDiv, OpUDiv, OpSMod, OpUMod, OpSRem, OpSNegate,
 		OpSelect, OpPhi,
 		OpIEqual, OpINotEqual,
 		OpFOrdEqual, OpFOrdLessThan, OpFOrdGreaterThan,
 		OpFOrdLessThanEqual, OpFOrdGreaterThanEqual,
+		OpULessThan, OpUGreaterThan, OpULessThanEqual, OpUGreaterThanEqual,
+		OpSLessThan, OpSGreaterThan, OpSLessThanEqual, OpSGreaterThanEqual,
+		OpLogicalAnd, OpLogicalOr, OpLogicalNot,
+		OpBitwiseAnd, OpBitwiseOr, OpBitwiseXor, OpNot,
+		OpShiftLeftLogical, OpShiftRightLogical, OpShiftRightArithmetic,
+		OpDot, OpVectorTimesScalar, OpMatrixTimesVector, OpMatrixTimesScalar,
+		OpMatrixTimesMatrix, OpTranspose, OpVectorShuffle,
+		OpCopyObject,
+		OpSampledImage, OpImageSampleImplicitLod, OpImageSampleExplicitLod,
+		OpImageFetch, OpImageQuerySize,
+		OpAtomicLoad, OpAtomicExchange, OpAtomicCompareExchange,
+		OpAtomicIIncrement, OpAtomicIDecrement,
+		OpAtomicIAdd, OpAtomicISub,
+		OpAtomicSMin, OpAtomicUMin, OpAtomicSMax, OpAtomicUMax,
+		OpFunctionCall,
 		OpUndef, OpExtInst:
 		if len(operands) >= 2 {
 			inst.TypeID = operands[0]
@@ -460,6 +607,14 @@ func decodeInstruction(opcode uint16, operands []uint32) Instruction {
 
 	case OpSelectionMerge, OpLoopMerge:
 		if len(operands) >= 1 {
+			inst.Operands = make([]uint32, len(operands))
+			copy(inst.Operands, operands)
+		}
+
+	// Instructions with only operands (no result type/ID).
+	case OpAtomicStore, OpControlBarrier, OpMemoryBarrier,
+		OpSwitch, OpKill, OpUnreachable:
+		if len(operands) > 0 {
 			inst.Operands = make([]uint32, len(operands))
 			copy(inst.Operands, operands)
 		}

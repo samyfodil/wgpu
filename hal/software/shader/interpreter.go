@@ -963,6 +963,51 @@ func (interp *interpreter) run() error {
 			// OpUndef produces an undefined value -- use zero.
 			interp.values[inst.ResultID] = Uint32(0)
 
+		case OpSampledImage:
+			// OpSampledImage: type resultID image sampler
+			// Combines a texture and sampler into a SampledImage pair.
+			if len(inst.Operands) >= 2 {
+				imgVal := interp.values[inst.Operands[0]]
+				sampVal := interp.values[inst.Operands[1]]
+				interp.values[inst.ResultID] = &SampledImageValue{Image: imgVal, Sampler: sampVal}
+			}
+
+		case OpImageSampleImplicitLod:
+			// OpImageSampleImplicitLod: type resultID sampledImage coordinate [ImageOperands...]
+			if len(inst.Operands) >= 2 {
+				sampledImg := interp.values[inst.Operands[0]]
+				coord := interp.values[inst.Operands[1]]
+				interp.values[inst.ResultID] = interp.sampleTexture(sampledImg, coord, 0)
+			}
+
+		case OpImageSampleExplicitLod:
+			// OpImageSampleExplicitLod: type resultID sampledImage coordinate ImageOperands lod
+			if len(inst.Operands) >= 2 {
+				sampledImg := interp.values[inst.Operands[0]]
+				coord := interp.values[inst.Operands[1]]
+				// For the software backend we only support LOD 0.
+				var lod float32
+				if len(inst.Operands) >= 4 && (inst.Operands[2]&ImageOperandLodMask) != 0 {
+					lod = toFloat32(interp.values[inst.Operands[3]])
+				}
+				interp.values[inst.ResultID] = interp.sampleTexture(sampledImg, coord, lod)
+			}
+
+		case OpImageFetch:
+			// OpImageFetch: type resultID image coordinate [ImageOperands...]
+			// Direct texel fetch by integer coordinates (no filtering).
+			if len(inst.Operands) >= 2 {
+				imgVal := interp.values[inst.Operands[0]]
+				coord := interp.values[inst.Operands[1]]
+				interp.values[inst.ResultID] = interp.fetchTexel(imgVal, coord)
+			}
+
+		case OpImageQuerySize:
+			// OpImageQuerySize: type resultID image
+			if len(inst.Operands) >= 1 {
+				interp.values[inst.ResultID] = interp.queryImageSize(interp.values[inst.Operands[0]])
+			}
+
 		default:
 			// Unknown opcodes are skipped. The triangle shader uses a small subset.
 		}
@@ -1464,4 +1509,245 @@ func vectorShuffle(m *Module, typeID uint32, vec1, vec2 Value, components []uint
 	default:
 		return Float32(0)
 	}
+}
+
+// =============================================================================
+// Texture Sampling
+// =============================================================================
+
+// resolveTexture looks up a Texture2D from a value that may be a BindingKey
+// or already a *Texture2D.
+func (interp *interpreter) resolveTexture(val Value) *Texture2D {
+	switch v := val.(type) {
+	case *Texture2D:
+		return v
+	case BindingKey:
+		if interp.ctx != nil && interp.ctx.Textures != nil {
+			return interp.ctx.Textures[v]
+		}
+	}
+	return nil
+}
+
+// resolveSampler looks up a Sampler from a value that may be a BindingKey
+// or already a *Sampler.
+func (interp *interpreter) resolveSampler(val Value) *Sampler {
+	switch v := val.(type) {
+	case *Sampler:
+		return v
+	case BindingKey:
+		if interp.ctx != nil && interp.ctx.Samplers != nil {
+			return interp.ctx.Samplers[v]
+		}
+	}
+	return nil
+}
+
+// sampleTexture samples a texture using the given sampled image and UV coordinates.
+// lod is the level-of-detail (only LOD 0 is supported).
+func (interp *interpreter) sampleTexture(sampledImg Value, coord Value, lod float32) Value {
+	_ = lod // LOD levels not implemented; always sample base level.
+
+	si, ok := sampledImg.(*SampledImageValue)
+	if !ok {
+		return Vec4{1, 0, 1, 1} // Magenta for error.
+	}
+
+	tex := interp.resolveTexture(si.Image)
+	if tex == nil || tex.Width == 0 || tex.Height == 0 || len(tex.Data) == 0 {
+		return Vec4{1, 0, 1, 1} // Magenta for missing texture.
+	}
+
+	samp := interp.resolveSampler(si.Sampler)
+	if samp == nil {
+		samp = &Sampler{} // Default: nearest, repeat.
+	}
+
+	// Extract UV coordinates.
+	var u, v float32
+	switch c := coord.(type) {
+	case Vec2:
+		u, v = c[0], c[1]
+	case Vec3:
+		u, v = c[0], c[1]
+	case Vec4:
+		u, v = c[0], c[1]
+	default:
+		u = toFloat32(coord)
+	}
+
+	// Apply wrap mode.
+	u = applyWrapMode(u, samp.WrapU)
+	v = applyWrapMode(v, samp.WrapV)
+
+	// Determine filter from the magnification filter.
+	filter := samp.MagFilter
+	if filter == FilterLinear {
+		return sampleBilinear(tex, u, v)
+	}
+	return sampleNearest(tex, u, v)
+}
+
+// fetchTexel fetches a single texel by integer coordinates (no filtering).
+func (interp *interpreter) fetchTexel(imgVal Value, coord Value) Value {
+	tex := interp.resolveTexture(imgVal)
+	if tex == nil || tex.Width == 0 || tex.Height == 0 || len(tex.Data) == 0 {
+		return Vec4{0, 0, 0, 0}
+	}
+
+	var x, y int
+	switch c := coord.(type) {
+	case Vec2:
+		x, y = int(c[0]), int(c[1])
+	case Vec3:
+		x, y = int(c[0]), int(c[1])
+	case Vec4:
+		x, y = int(c[0]), int(c[1])
+	default:
+		x = int(toUint32(coord))
+	}
+
+	// Clamp to texture bounds.
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+	if x >= int(tex.Width) {
+		x = int(tex.Width) - 1
+	}
+	if y >= int(tex.Height) {
+		y = int(tex.Height) - 1
+	}
+
+	return readTexel(tex, x, y)
+}
+
+// queryImageSize returns the size of a texture as a vec2 of uint32 values.
+func (interp *interpreter) queryImageSize(imgVal Value) Value {
+	tex := interp.resolveTexture(imgVal)
+	if tex == nil {
+		return Vec2{0, 0}
+	}
+	return Vec2{float32(tex.Width), float32(tex.Height)}
+}
+
+// applyWrapMode wraps a texture coordinate according to the specified mode.
+// The result is in [0, 1) for repeat modes and [0, 1] for clamp.
+func applyWrapMode(coord float32, mode uint32) float32 {
+	switch mode {
+	case WrapClampToEdge:
+		if coord < 0 {
+			return 0
+		}
+		if coord > 1 {
+			return 1
+		}
+		return coord
+
+	case WrapMirroredRepeat:
+		// Mirror: period is 2.0; within [0,1] normal, [1,2] reflected.
+		coord = float32(math.Abs(float64(coord)))
+		period := int(coord)
+		frac := coord - float32(period)
+		if period%2 != 0 {
+			return 1 - frac
+		}
+		return frac
+
+	default: // WrapRepeat
+		coord = coord - float32(int(coord))
+		if coord < 0 {
+			coord += 1
+		}
+		return coord
+	}
+}
+
+// sampleNearest samples a texture at the given UV using nearest-neighbor filtering.
+func sampleNearest(tex *Texture2D, u, v float32) Vec4 {
+	x := int(u * float32(tex.Width))
+	y := int(v * float32(tex.Height))
+
+	// Clamp to valid pixel range.
+	if x < 0 {
+		x = 0
+	}
+	if y < 0 {
+		y = 0
+	}
+	if x >= int(tex.Width) {
+		x = int(tex.Width) - 1
+	}
+	if y >= int(tex.Height) {
+		y = int(tex.Height) - 1
+	}
+
+	return readTexel(tex, x, y)
+}
+
+// sampleBilinear samples a texture at the given UV using bilinear (4-tap) filtering.
+func sampleBilinear(tex *Texture2D, u, v float32) Vec4 {
+	// Map UV to texel space (center of pixel 0 is at 0.5/width).
+	fx := u*float32(tex.Width) - 0.5
+	fy := v*float32(tex.Height) - 0.5
+
+	x0 := int(math.Floor(float64(fx)))
+	y0 := int(math.Floor(float64(fy)))
+	x1 := x0 + 1
+	y1 := y0 + 1
+
+	// Fractional part for interpolation.
+	fracX := fx - float32(x0)
+	fracY := fy - float32(y0)
+
+	// Clamp coordinates.
+	w := int(tex.Width)
+	h := int(tex.Height)
+	x0 = clampInt(x0, 0, w-1)
+	y0 = clampInt(y0, 0, h-1)
+	x1 = clampInt(x1, 0, w-1)
+	y1 = clampInt(y1, 0, h-1)
+
+	// Fetch the four texels.
+	c00 := readTexel(tex, x0, y0)
+	c10 := readTexel(tex, x1, y0)
+	c01 := readTexel(tex, x0, y1)
+	c11 := readTexel(tex, x1, y1)
+
+	// Bilinear interpolation.
+	var result Vec4
+	for i := 0; i < 4; i++ {
+		top := c00[i]*(1-fracX) + c10[i]*fracX
+		bot := c01[i]*(1-fracX) + c11[i]*fracX
+		result[i] = top*(1-fracY) + bot*fracY
+	}
+	return result
+}
+
+// readTexel reads a single RGBA texel from the texture at pixel coordinates (x, y).
+// Returns normalized [0,1] float values.
+func readTexel(tex *Texture2D, x, y int) Vec4 {
+	idx := (y*int(tex.Width) + x) * 4
+	if idx+3 >= len(tex.Data) {
+		return Vec4{0, 0, 0, 0}
+	}
+	return Vec4{
+		float32(tex.Data[idx+0]) / 255.0,
+		float32(tex.Data[idx+1]) / 255.0,
+		float32(tex.Data[idx+2]) / 255.0,
+		float32(tex.Data[idx+3]) / 255.0,
+	}
+}
+
+// clampInt clamps an integer to [min, max].
+func clampInt(v, min, max int) int {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
 }

@@ -38,3 +38,71 @@ type Array = []Value
 type Pointer struct {
 	Value Value
 }
+
+// Mat4 is a 4x4 column-major matrix stored as an Array of 4 Vec4 columns.
+// SPIR-V represents matrices as arrays of column vectors.
+type Mat4 = [4]Vec4
+
+// Texture2D represents a 2D texture for sampling in the SPIR-V interpreter.
+type Texture2D struct {
+	Width  uint32
+	Height uint32
+	Data   []byte // RGBA pixel data, row-major, 4 bytes per pixel.
+	Format uint32 // Texture format identifier (0 = RGBA8).
+}
+
+// Sampler describes texture sampling parameters.
+type Sampler struct {
+	MinFilter uint32 // 0 = Nearest, 1 = Linear.
+	MagFilter uint32 // 0 = Nearest, 1 = Linear.
+	WrapU     uint32 // 0 = Repeat, 1 = ClampToEdge, 2 = MirroredRepeat.
+	WrapV     uint32 // 0 = Repeat, 1 = ClampToEdge, 2 = MirroredRepeat.
+}
+
+// Wrap mode constants.
+const (
+	WrapRepeat         = 0
+	WrapClampToEdge    = 1
+	WrapMirroredRepeat = 2
+)
+
+// Filter constants.
+const (
+	FilterNearest = 0
+	FilterLinear  = 1
+)
+
+// SampledImageValue combines a texture reference and a sampler reference.
+// Created by OpSampledImage, consumed by OpImageSample* opcodes.
+type SampledImageValue struct {
+	Image   Value // BindingKey or *Texture2D
+	Sampler Value // BindingKey or *Sampler
+}
+
+// ExecutionContext provides bound resources for shader execution.
+// Shaders read uniform/storage buffers, textures, and samplers through this context.
+type ExecutionContext struct {
+	// Inputs maps variable ID to its value (builtin inputs like vertex_index).
+	Inputs map[uint32]Value
+
+	// Buffers maps (group, binding) to raw buffer data for uniform/storage buffers.
+	Buffers map[BindingKey][]byte
+
+	// Textures maps (group, binding) to a 2D texture.
+	Textures map[BindingKey]*Texture2D
+
+	// Samplers maps (group, binding) to sampler parameters.
+	Samplers map[BindingKey]*Sampler
+
+	// WorkgroupSharedMemory is shared memory for compute shader workgroups.
+	// Maps variable ID to a byte slice shared across all invocations.
+	WorkgroupSharedMemory map[uint32][]byte
+
+	// ComputeBuiltins provides compute shader built-in values.
+	GlobalInvocationID   [3]uint32
+	LocalInvocationID    [3]uint32
+	WorkgroupID          [3]uint32
+	NumWorkgroups        [3]uint32
+	WorkgroupSize        [3]uint32
+	LocalInvocationIndex uint32
+}
