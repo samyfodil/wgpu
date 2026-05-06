@@ -119,18 +119,18 @@ func (interp *interpreter) initComputeBuiltins() {
 
 		var val Value
 		switch bi {
-		case BuiltInGlobalInvocationId:
+		case BuiltInGlobalInvocationID:
 			val = uvec3ToValue(ctx.GlobalInvocationID)
-		case BuiltInLocalInvocationId:
+		case BuiltInLocalInvocationID:
 			val = uvec3ToValue(ctx.LocalInvocationID)
-		case BuiltInWorkgroupId:
+		case BuiltInWorkgroupID:
 			val = uvec3ToValue(ctx.WorkgroupID)
 		case BuiltInNumWorkgroups:
 			val = uvec3ToValue(ctx.NumWorkgroups)
 		case BuiltInWorkgroupSize:
 			val = uvec3ToValue(ctx.WorkgroupSize)
 		case BuiltInLocalInvocationIdx:
-			val = Uint32(ctx.LocalInvocationIndex)
+			val = ctx.LocalInvocationIndex
 		default:
 			continue
 		}
@@ -175,7 +175,7 @@ func (interp *interpreter) initWorkgroupVariables() {
 // For simplicity, we store them as Vec3 but retrieve via toUint32.
 func uvec3ToValue(v [3]uint32) Value {
 	// Store as an Array of 3 Uint32 values for proper integer handling.
-	return Array{Uint32(v[0]), Uint32(v[1]), Uint32(v[2])}
+	return Array{v[0], v[1], v[2]}
 }
 
 // DispatchCompute executes a compute shader for all invocations in the dispatch.
@@ -186,7 +186,6 @@ func uvec3ToValue(v [3]uint32) Value {
 // workgroup. OpControlBarrier is a no-op since there is no true parallelism.
 func (m *Module) DispatchCompute(entryPoint string, ctx *ExecutionContext,
 	groupCountX, groupCountY, groupCountZ uint32) error {
-
 	wgSize := m.GetWorkgroupSize(entryPoint)
 
 	ctx.NumWorkgroups = [3]uint32{groupCountX, groupCountY, groupCountZ}
@@ -282,12 +281,12 @@ func (interp *interpreter) executeAtomicOp(inst Instruction) Value {
 	case OpAtomicIAdd:
 		if len(inst.Operands) >= 4 {
 			addVal := toUint32(interp.values[inst.Operands[3]])
-			ptr.Value = Uint32(oldVal + addVal)
+			ptr.Value = oldVal + addVal
 		}
 	case OpAtomicISub:
 		if len(inst.Operands) >= 4 {
 			subVal := toUint32(interp.values[inst.Operands[3]])
-			ptr.Value = Uint32(oldVal - subVal)
+			ptr.Value = oldVal - subVal
 		}
 	case OpAtomicExchange:
 		if len(inst.Operands) >= 4 {
@@ -299,7 +298,7 @@ func (interp *interpreter) executeAtomicOp(inst Instruction) Value {
 			newVal := toUint32(interp.values[inst.Operands[4]])
 			comparator := toUint32(interp.values[inst.Operands[5]])
 			if oldVal == comparator {
-				ptr.Value = Uint32(newVal)
+				ptr.Value = newVal
 			}
 		}
 	case OpAtomicSMin:
@@ -307,14 +306,14 @@ func (interp *interpreter) executeAtomicOp(inst Instruction) Value {
 			v := int32(toUint32(interp.values[inst.Operands[3]]))
 			old := int32(oldVal)
 			if v < old {
-				ptr.Value = Uint32(uint32(v))
+				ptr.Value = uint32(v)
 			}
 		}
 	case OpAtomicUMin:
 		if len(inst.Operands) >= 4 {
 			v := toUint32(interp.values[inst.Operands[3]])
 			if v < oldVal {
-				ptr.Value = Uint32(v)
+				ptr.Value = v
 			}
 		}
 	case OpAtomicSMax:
@@ -322,20 +321,20 @@ func (interp *interpreter) executeAtomicOp(inst Instruction) Value {
 			v := int32(toUint32(interp.values[inst.Operands[3]]))
 			old := int32(oldVal)
 			if v > old {
-				ptr.Value = Uint32(uint32(v))
+				ptr.Value = uint32(v)
 			}
 		}
 	case OpAtomicUMax:
 		if len(inst.Operands) >= 4 {
 			v := toUint32(interp.values[inst.Operands[3]])
 			if v > oldVal {
-				ptr.Value = Uint32(v)
+				ptr.Value = v
 			}
 		}
 	case OpAtomicIIncrement:
-		ptr.Value = Uint32(oldVal + 1)
+		ptr.Value = oldVal + 1
 	case OpAtomicIDecrement:
-		ptr.Value = Uint32(oldVal - 1)
+		ptr.Value = oldVal - 1
 	case OpAtomicLoad:
 		// Load is just a read -- no modification.
 	case OpAtomicStore:
@@ -346,7 +345,7 @@ func (interp *interpreter) executeAtomicOp(inst Instruction) Value {
 		return nil
 	}
 
-	return Uint32(oldVal)
+	return oldVal
 }
 
 // writeStorageBufferBack writes modified storage buffer values back to the

@@ -687,19 +687,19 @@ func TestIntDivisionOps(t *testing.T) {
 			if b == 0 {
 				return Uint32(0)
 			}
-			return Uint32(a / b)
+			return a / b
 		}, 10, 3, Uint32(3)},
 		{"udiv_zero", func(a, b uint32) Value {
 			if b == 0 {
 				return Uint32(0)
 			}
-			return Uint32(a / b)
+			return a / b
 		}, 10, 0, Uint32(0)},
 		{"umod", func(a, b uint32) Value {
 			if b == 0 {
 				return Uint32(0)
 			}
-			return Uint32(a % b)
+			return a % b
 		}, 10, 3, Uint32(1)},
 	}
 	for _, tt := range tests {
@@ -729,7 +729,7 @@ func TestBitwiseOps(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := intBinOp(Uint32(tt.a), Uint32(tt.b), tt.op)
+			got := intBinOp(tt.a, tt.b, tt.op)
 			u, ok := got.(Uint32)
 			if !ok || u != tt.want {
 				t.Errorf("%s(0x%X, 0x%X) = %v, want 0x%X", tt.name, tt.a, tt.b, got, tt.want)

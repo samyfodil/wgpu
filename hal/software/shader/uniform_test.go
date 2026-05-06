@@ -487,7 +487,7 @@ func TestWriteValueToBuffer(t *testing.T) {
 				}
 			case Uint32:
 				got := readUint32LE(buf[0:])
-				if got != uint32(v) {
+				if got != v {
 					t.Errorf("round-trip uint = %d, want %d", got, v)
 				}
 			case Vec4:

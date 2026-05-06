@@ -246,9 +246,9 @@ func (interp *interpreter) readValueFromBuffer(data []byte, offset uint32, ti *T
 		bits := uint32(data[offset]) | uint32(data[offset+1])<<8 |
 			uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24
 		if ti.Signed {
-			return Int32(int32(bits))
+			return int32(bits)
 		}
-		return Uint32(bits)
+		return bits
 
 	case TypeBool:
 		if offset+4 > uint32(len(data)) {
@@ -517,7 +517,7 @@ func (interp *interpreter) run() error {
 		inst := instructions[pc]
 
 		// --- Debug: pre-instruction hooks ---
-		if debug != nil {
+		if debug != nil { //nolint:nestif // Debug context checks require nested conditionals for breakpoints and stepping.
 			blockLabel := interp.currentBlockLabel(pc)
 			event := InstructionEvent{
 				PC:          pc,
@@ -743,7 +743,7 @@ func (interp *interpreter) run() error {
 			// The actual loop is driven by OpBranchConditional.
 
 		case OpBranchConditional:
-			if len(inst.Operands) >= 3 {
+			if len(inst.Operands) >= 3 { //nolint:nestif // Branch + loop iteration guard requires nested depth checks.
 				cond := interp.values[inst.Operands[0]]
 				trueLabel := inst.Operands[1]
 				falseLabel := inst.Operands[2]
@@ -944,7 +944,7 @@ func (interp *interpreter) run() error {
 				a := int32(toUint32(interp.values[inst.Operands[0]]))
 				b := int32(toUint32(interp.values[inst.Operands[1]]))
 				if b != 0 {
-					interp.values[inst.ResultID] = Int32(a / b)
+					interp.values[inst.ResultID] = a / b
 				} else {
 					interp.values[inst.ResultID] = Int32(0)
 				}
@@ -955,7 +955,7 @@ func (interp *interpreter) run() error {
 				a := toUint32(interp.values[inst.Operands[0]])
 				b := toUint32(interp.values[inst.Operands[1]])
 				if b != 0 {
-					interp.values[inst.ResultID] = Uint32(a / b)
+					interp.values[inst.ResultID] = a / b
 				} else {
 					interp.values[inst.ResultID] = Uint32(0)
 				}
@@ -966,7 +966,7 @@ func (interp *interpreter) run() error {
 				a := int32(toUint32(interp.values[inst.Operands[0]]))
 				b := int32(toUint32(interp.values[inst.Operands[1]]))
 				if b != 0 {
-					interp.values[inst.ResultID] = Int32(a % b)
+					interp.values[inst.ResultID] = a % b
 				} else {
 					interp.values[inst.ResultID] = Int32(0)
 				}
@@ -977,7 +977,7 @@ func (interp *interpreter) run() error {
 				a := toUint32(interp.values[inst.Operands[0]])
 				b := toUint32(interp.values[inst.Operands[1]])
 				if b != 0 {
-					interp.values[inst.ResultID] = Uint32(a % b)
+					interp.values[inst.ResultID] = a % b
 				} else {
 					interp.values[inst.ResultID] = Uint32(0)
 				}
@@ -989,7 +989,7 @@ func (interp *interpreter) run() error {
 				b := int32(toUint32(interp.values[inst.Operands[1]]))
 				if b != 0 {
 					// SPIR-V SRem: remainder has same sign as dividend.
-					interp.values[inst.ResultID] = Int32(a % b)
+					interp.values[inst.ResultID] = a % b
 				} else {
 					interp.values[inst.ResultID] = Int32(0)
 				}
@@ -1027,13 +1027,13 @@ func (interp *interpreter) run() error {
 		case OpSNegate:
 			if len(inst.Operands) >= 1 {
 				a := int32(toUint32(interp.values[inst.Operands[0]]))
-				interp.values[inst.ResultID] = Int32(-a)
+				interp.values[inst.ResultID] = -a
 			}
 
 		case OpConvertFToS:
 			if len(inst.Operands) >= 1 {
 				f := toFloat32(interp.values[inst.Operands[0]])
-				interp.values[inst.ResultID] = Int32(int32(f))
+				interp.values[inst.ResultID] = int32(f)
 			}
 
 		case OpSConvert, OpUConvert, OpFConvert:
@@ -1131,7 +1131,7 @@ func (interp *interpreter) run() error {
 		case OpNot:
 			if len(inst.Operands) >= 1 {
 				a := toUint32(interp.values[inst.Operands[0]])
-				interp.values[inst.ResultID] = Uint32(^a)
+				interp.values[inst.ResultID] = ^a
 			}
 
 		case OpShiftLeftLogical:
@@ -1148,7 +1148,7 @@ func (interp *interpreter) run() error {
 			if len(inst.Operands) >= 2 {
 				a := int32(toUint32(interp.values[inst.Operands[0]]))
 				b := toUint32(interp.values[inst.Operands[1]]) & 31
-				interp.values[inst.ResultID] = Int32(a >> b)
+				interp.values[inst.ResultID] = a >> b
 			}
 
 		case OpAtomicIAdd, OpAtomicISub, OpAtomicExchange, OpAtomicCompareExchange,
@@ -1178,7 +1178,7 @@ func (interp *interpreter) run() error {
 				instNum := inst.Operands[1]
 				extOps := inst.Operands[2:]
 				setName := interp.module.ExtInstImports[setID]
-				if setName == "GLSL.std.450" {
+				if setName == glslExtSetName {
 					interp.values[inst.ResultID] = interp.executeGLSLExtInst(instNum, extOps)
 				}
 			}
@@ -1233,7 +1233,7 @@ func (interp *interpreter) run() error {
 		}
 
 		// --- Debug: post-instruction hooks ---
-		if debug != nil {
+		if debug != nil { //nolint:nestif // Debug trace and watch variable checks require nested conditionals.
 			// Trace output: write one JSON line per result-producing instruction.
 			if traceEnc != nil && inst.ResultID != 0 {
 				writeTrace(debug.TraceWriter, traceEnc, traceEnt, pc-1, inst, interp.values)
@@ -1410,7 +1410,7 @@ func (interp *interpreter) bufferAccessChain(bp *BufferPointer, indexes []uint32
 			}
 
 		default:
-			break
+			currentType = nil
 		}
 	}
 
@@ -1839,17 +1839,15 @@ func vectorShuffle(m *Module, typeID uint32, vec1, vec2 Value, components []uint
 	// Flatten both vectors into a combined component array.
 	var pool []float32
 	pool = appendComponents(pool, vec1)
-	n1 := uint32(len(pool))
 	pool = appendComponents(pool, vec2)
 	total := uint32(len(pool))
 
 	var out []float32
 	for _, idx := range components {
-		if idx == 0xFFFFFFFF || idx >= total {
+		switch {
+		case idx == 0xFFFFFFFF || idx >= total:
 			out = append(out, 0) // Undefined component.
-		} else if idx < n1 {
-			out = append(out, pool[idx])
-		} else {
+		default:
 			out = append(out, pool[idx])
 		}
 	}
@@ -2038,9 +2036,9 @@ func applyWrapMode(coord float32, mode uint32) float32 {
 		return frac
 
 	default: // WrapRepeat
-		coord = coord - float32(int(coord))
+		coord -= float32(int(coord))
 		if coord < 0 {
-			coord += 1
+			coord++
 		}
 		return coord
 	}
@@ -2086,10 +2084,10 @@ func sampleBilinear(tex *Texture2D, u, v float32) Vec4 {
 	// Clamp coordinates.
 	w := int(tex.Width)
 	h := int(tex.Height)
-	x0 = clampInt(x0, 0, w-1)
-	y0 = clampInt(y0, 0, h-1)
-	x1 = clampInt(x1, 0, w-1)
-	y1 = clampInt(y1, 0, h-1)
+	x0 = clampInt(x0, w-1)
+	y0 = clampInt(y0, h-1)
+	x1 = clampInt(x1, w-1)
+	y1 = clampInt(y1, h-1)
 
 	// Fetch the four texels.
 	c00 := readTexel(tex, x0, y0)
@@ -2122,13 +2120,13 @@ func readTexel(tex *Texture2D, x, y int) Vec4 {
 	}
 }
 
-// clampInt clamps an integer to [min, max].
-func clampInt(v, min, max int) int {
-	if v < min {
-		return min
+// clampInt clamps an integer to [0, hi].
+func clampInt(v, hi int) int {
+	if v < 0 {
+		return 0
 	}
-	if v > max {
-		return max
+	if v > hi {
+		return hi
 	}
 	return v
 }

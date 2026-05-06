@@ -345,12 +345,12 @@ func TestAtomicMinMaxOps(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ptr := &Pointer{Value: Uint32(tt.initial)}
+			ptr := &Pointer{Value: tt.initial}
 			interp := &interpreter{
 				module: m,
 				values: map[uint32]Value{
 					1: ptr,
-					2: Uint32(tt.operand),
+					2: tt.operand,
 				},
 			}
 			inst := Instruction{

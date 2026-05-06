@@ -11,7 +11,7 @@ import (
 // Phase 5 Tests: Control Flow (loops, phi, function calls, switch)
 // =============================================================================
 
-// buildLoopSumSPIRV constructs SPIR-V for a shader that sums integers 1..N using a loop:
+// buildLoopSumSPIRVFixed constructs SPIR-V for a shader that sums integers 1..N using a loop:
 //
 //	@group(0) @binding(0) var<uniform> params: Params;
 //	struct Params { n: u32 }
@@ -25,113 +25,6 @@ import (
 //	    }
 //	    return vec4(f32(sum), 0, 0, 1);
 //	}
-func buildLoopSumSPIRV() []uint32 {
-	inst := spirvInst
-	str := spirvString
-	f := math.Float32bits
-
-	const (
-		idVoid      = 1
-		idFloat     = 2
-		idVec4      = 3
-		idUint      = 4
-		idPtrV4Out  = 5
-		idFuncTy    = 6
-		idFunc      = 7
-		idColorOut  = 8
-		idStruct    = 9
-		idPtrStruct = 10
-		idParamsVar = 11
-		idConst0U   = 12
-		idConst1U   = 13
-		idPtrUint   = 14
-		idChainN    = 15
-		idLoadN     = 16
-		idConst0F   = 17
-		idConst1F   = 18
-		// Labels
-		idLabelEntry  = 19
-		idLabelHeader = 20
-		idLabelBody   = 21
-		idLabelMerge  = 22
-		idLabelCont   = 23
-		// Phi + body values
-		idPhiSum   = 24
-		idPhiI     = 25
-		idCmpGT    = 26
-		idNewSum   = 27
-		idNewI     = 28
-		idSumFloat = 29
-		idResult   = 30
-		idBound    = 31
-	)
-
-	nameWords := str("fs_main")
-	epLen := uint16(3 + len(nameWords) + 1)
-	epInst := append([]uint32{inst(epLen, OpEntryPoint), ExecutionModelFragment, idFunc}, nameWords...)
-	epInst = append(epInst, idColorOut)
-
-	words := make([]uint32, 0, 250)
-	words = append(words,
-		spirvMagic, 0x00010300, 0, idBound, 0,
-		inst(2, OpCapability), 1,
-		inst(3, OpMemoryModel), 0, 1,
-	)
-	words = append(words, epInst...)
-	words = append(words,
-		inst(3, OpExecutionMode), idFunc, 7,
-		inst(4, OpDecorate), idColorOut, DecorationLocation, 0,
-		inst(4, OpDecorate), idParamsVar, DecorationBinding, 0,
-		inst(4, OpDecorate), idParamsVar, DecorationDescriptorSet, 0,
-		inst(3, OpDecorate), idStruct, DecorationBlock,
-		inst(5, OpMemberDecorate), idStruct, 0, DecorationOffset, 0,
-
-		inst(2, OpTypeVoid), idVoid,
-		inst(3, OpTypeFloat), idFloat, 32,
-		inst(4, OpTypeInt), idUint, 32, 0,
-		inst(4, OpTypeVector), idVec4, idFloat, 4,
-		inst(3, OpTypeStruct), idStruct, idUint,
-		inst(4, OpTypePointer), idPtrV4Out, StorageClassOutput, idVec4,
-		inst(4, OpTypePointer), idPtrStruct, StorageClassUniform, idStruct,
-		inst(4, OpTypePointer), idPtrUint, StorageClassUniform, idUint,
-		inst(3, OpTypeFunction), idFuncTy, idVoid,
-
-		inst(4, OpConstant), idUint, idConst0U, 0,
-		inst(4, OpConstant), idUint, idConst1U, 1,
-		inst(4, OpConstant), idFloat, idConst0F, f(0),
-		inst(4, OpConstant), idFloat, idConst1F, f(1),
-
-		inst(4, OpVariable), idPtrV4Out, idColorOut, StorageClassOutput,
-		inst(4, OpVariable), idPtrStruct, idParamsVar, StorageClassUniform,
-
-		// Function body with loop.
-		inst(5, OpFunction), idVoid, idFunc, 0, idFuncTy,
-
-		// Entry block: load N, branch to header.
-		inst(2, OpLabel), idLabelEntry,
-		inst(5, OpAccessChain), idPtrUint, idChainN, idParamsVar, idConst0U,
-		inst(4, OpLoad), idUint, idLoadN, idChainN,
-		inst(2, OpBranch), idLabelHeader,
-
-		// Loop header: phi nodes for sum and i.
-		inst(2, OpLabel), idLabelHeader,
-		// OpPhi: type result (value parent)...
-		// sum_phi = phi(0 from entry, newSum from continue)
-		inst(7, OpPhi), idUint, idPhiSum, idConst0U, idLabelEntry, idNewSum, idLabelCont,
-		// i_phi = phi(1 from entry, newI from continue)
-		inst(7, OpPhi), idUint, idPhiI, idConst1U, idLabelEntry, idNewI, idLabelCont,
-		// Loop merge: merge=idLabelMerge, continue=idLabelCont
-		inst(4, OpLoopMerge), idLabelMerge, idLabelCont, 0,
-		// if i > n, break (go to merge); else go to body
-		inst(5, OpUGreaterThan), 20 /* OpTypeBool placeholder */, idCmpGT, idPhiI, idLoadN,
-	)
-	// Fix: we need a bool type. Let me add OpTypeBool.
-	// Actually, let me restructure. The problem is we need to insert a bool type.
-	// Let me rebuild from scratch with proper type IDs.
-
-	return buildLoopSumSPIRVFixed()
-}
-
 func buildLoopSumSPIRVFixed() []uint32 {
 	inst := spirvInst
 	str := spirvString

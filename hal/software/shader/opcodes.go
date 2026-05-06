@@ -217,12 +217,12 @@ const (
 	BuiltInInstanceIndex      = 43
 	BuiltInFragCoord          = 15
 	BuiltInFrontFacing        = 17
-	BuiltInSampleId           = 18
+	BuiltInSampleID           = 18
 	BuiltInSampleMask         = 20
 	BuiltInFragDepth          = 22
-	BuiltInGlobalInvocationId = 28
-	BuiltInLocalInvocationId  = 27
-	BuiltInWorkgroupId        = 26
+	BuiltInGlobalInvocationID = 28
+	BuiltInLocalInvocationID  = 27
+	BuiltInWorkgroupID        = 26
 	BuiltInNumWorkgroups      = 24
 	BuiltInLocalInvocationIdx = 29
 	BuiltInWorkgroupSize      = 25

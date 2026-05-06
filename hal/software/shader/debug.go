@@ -27,6 +27,27 @@ import (
 	"io"
 )
 
+// Type name constants for trace output.
+const (
+	typeNameFloat32 = "float32"
+	typeNameUint32  = "uint32"
+	typeNameInt32   = "int32"
+	typeNameBool    = "bool"
+	typeNameVec2    = "vec2"
+	typeNameVec3    = "vec3"
+	typeNameVec4    = "vec4"
+	typeNamePtr     = "ptr"
+	typeNameArray   = "array"
+)
+
+// Opcode name constants for trace output.
+const (
+	opNameUnknown            = "OpUnknown"
+	opNameLoad               = "OpLoad"
+	opNameCompositeConstruct = "OpCompositeConstruct"
+	glslExtSetName           = "GLSL.std.450"
+)
+
 // DebugAction controls execution flow after a debug callback.
 type DebugAction int
 
@@ -124,7 +145,7 @@ type traceEntry struct {
 // writeTrace writes a single JSON-lines trace entry for the executed instruction.
 // Called after instruction execution when TraceEnabled is true and the instruction
 // produces a result (ResultID != 0).
-func writeTrace(w io.Writer, enc *json.Encoder, entry *traceEntry, pc int, inst Instruction, values map[uint32]Value) {
+func writeTrace(_ io.Writer, enc *json.Encoder, entry *traceEntry, pc int, inst Instruction, values map[uint32]Value) {
 	if inst.ResultID == 0 {
 		return
 	}
@@ -144,11 +165,11 @@ func writeTrace(w io.Writer, enc *json.Encoder, entry *traceEntry, pc int, inst 
 func formatTraceValue(val Value) any {
 	switch v := val.(type) {
 	case Float32:
-		return float32(v)
+		return v
 	case Uint32:
-		return uint32(v)
+		return v
 	case Int32:
-		return int32(v)
+		return v
 	case bool:
 		return v
 	case Vec2:
@@ -168,23 +189,23 @@ func formatTraceValue(val Value) any {
 func valueTypeName(val Value) string {
 	switch val.(type) {
 	case Float32:
-		return "float32"
+		return typeNameFloat32
 	case Uint32:
-		return "uint32"
+		return typeNameUint32
 	case Int32:
-		return "int32"
+		return typeNameInt32
 	case bool:
-		return "bool"
+		return typeNameBool
 	case Vec2:
-		return "vec2"
+		return typeNameVec2
 	case Vec3:
-		return "vec3"
+		return typeNameVec3
 	case Vec4:
-		return "vec4"
+		return typeNameVec4
 	case *Pointer:
-		return "ptr"
+		return typeNamePtr
 	case Array:
-		return "array"
+		return typeNameArray
 	default:
 		return ""
 	}
@@ -233,7 +254,7 @@ func opcodeName(op uint16) string {
 	if name, ok := opcodeNames[op]; ok {
 		return name
 	}
-	return "OpUnknown"
+	return opNameUnknown
 }
 
 // opcodeNames maps SPIR-V opcode numbers to their string names.
@@ -242,10 +263,10 @@ var opcodeNames = map[uint16]string{
 	OpUndef:                  "OpUndef",
 	OpLabel:                  "OpLabel",
 	OpVariable:               "OpVariable",
-	OpLoad:                   "OpLoad",
+	OpLoad:                   opNameLoad,
 	OpStore:                  "OpStore",
 	OpAccessChain:            "OpAccessChain",
-	OpCompositeConstruct:     "OpCompositeConstruct",
+	OpCompositeConstruct:     opNameCompositeConstruct,
 	OpCompositeExtract:       "OpCompositeExtract",
 	OpCopyObject:             "OpCopyObject",
 	OpVectorShuffle:          "OpVectorShuffle",

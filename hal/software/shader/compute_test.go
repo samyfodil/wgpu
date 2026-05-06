@@ -72,7 +72,7 @@ func buildArraySumComputeSPIRV() []uint32 {
 		inst(6, OpExecutionMode), idFunc, ExecutionModeLocalSize, 4, 1, 1,
 
 		// Decorations.
-		inst(4, OpDecorate), idGIDVar, DecorationBuiltIn, BuiltInGlobalInvocationId,
+		inst(4, OpDecorate), idGIDVar, DecorationBuiltIn, BuiltInGlobalInvocationID,
 		inst(4, OpDecorate), idInputVar, DecorationBinding, 0,
 		inst(4, OpDecorate), idInputVar, DecorationDescriptorSet, 0,
 		inst(4, OpDecorate), idOutputVar, DecorationBinding, 1,
@@ -211,7 +211,7 @@ func TestComputeBuiltins(t *testing.T) {
 	words = append(words,
 		inst(6, OpExecutionMode), idFunc, ExecutionModeLocalSize, 1, 1, 1,
 
-		inst(4, OpDecorate), idGIDVar, DecorationBuiltIn, BuiltInGlobalInvocationId,
+		inst(4, OpDecorate), idGIDVar, DecorationBuiltIn, BuiltInGlobalInvocationID,
 		inst(4, OpDecorate), idOutputVar, DecorationBinding, 0,
 		inst(4, OpDecorate), idOutputVar, DecorationDescriptorSet, 0,
 		inst(3, OpDecorate), idStruct, DecorationBlock,
@@ -330,12 +330,12 @@ func TestAtomicOps(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ptr := &Pointer{Value: Uint32(tt.initial)}
+			ptr := &Pointer{Value: tt.initial}
 			interp := &interpreter{
 				module: m,
 				values: map[uint32]Value{
 					1: ptr,
-					2: Uint32(tt.operand),
+					2: tt.operand,
 				},
 			}
 
@@ -464,7 +464,7 @@ func TestDispatchComputeMultipleWorkgroups(t *testing.T) {
 	words = append(words,
 		inst(6, OpExecutionMode), idFunc, ExecutionModeLocalSize, 1, 1, 1,
 
-		inst(4, OpDecorate), idGIDVar, DecorationBuiltIn, BuiltInGlobalInvocationId,
+		inst(4, OpDecorate), idGIDVar, DecorationBuiltIn, BuiltInGlobalInvocationID,
 		inst(4, OpDecorate), idOutputVar, DecorationBinding, 0,
 		inst(4, OpDecorate), idOutputVar, DecorationDescriptorSet, 0,
 		inst(3, OpDecorate), idStruct, DecorationBlock,

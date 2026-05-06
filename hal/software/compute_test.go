@@ -87,7 +87,7 @@ func buildScaledCopySPIRV() []uint32 {
 		inst(6, shader.OpExecutionMode), idFunc, shader.ExecutionModeLocalSize, 64, 1, 1,
 
 		// Decorations.
-		inst(4, shader.OpDecorate), idGIDVar, shader.DecorationBuiltIn, shader.BuiltInGlobalInvocationId,
+		inst(4, shader.OpDecorate), idGIDVar, shader.DecorationBuiltIn, shader.BuiltInGlobalInvocationID,
 		inst(4, shader.OpDecorate), idInputVar, shader.DecorationBinding, 0,
 		inst(4, shader.OpDecorate), idInputVar, shader.DecorationDescriptorSet, 0,
 		inst(4, shader.OpDecorate), idOutputVar, shader.DecorationBinding, 1,

@@ -66,6 +66,8 @@ const (
 // executeGLSLExtInst dispatches a GLSL.std.450 extended instruction.
 // instNum is the instruction number from the GLSL set.
 // operands are the remaining SPIR-V operands after the set ID and instruction number.
+//
+//nolint:maintidx // Large switch is inherent to GLSL.std.450 opcode dispatch.
 func (interp *interpreter) executeGLSLExtInst(instNum uint32, operands []uint32) Value {
 	switch instNum {
 	// --- Scalar/vector unary float ops ---
@@ -216,9 +218,9 @@ func (interp *interpreter) executeGLSLExtInst(instNum uint32, operands []uint32)
 		if len(operands) >= 1 {
 			v := int32(toUint32(interp.values[operands[0]]))
 			if v < 0 {
-				return Int32(-v)
+				return -v
 			}
-			return Int32(v)
+			return v
 		}
 	case GLSLSSign:
 		if len(operands) >= 1 {
@@ -348,7 +350,7 @@ func (interp *interpreter) glslBinaryUint(operands []uint32, fn func(uint32, uin
 	}
 	a := toUint32(interp.values[operands[0]])
 	b := toUint32(interp.values[operands[1]])
-	return Uint32(fn(a, b))
+	return fn(a, b)
 }
 
 // glslBinaryInt applies a binary signed int function.
@@ -358,7 +360,7 @@ func (interp *interpreter) glslBinaryInt(operands []uint32, fn func(int32, int32
 	}
 	a := int32(toUint32(interp.values[operands[0]]))
 	b := int32(toUint32(interp.values[operands[1]]))
-	return Int32(fn(a, b))
+	return fn(a, b)
 }
 
 // =============================================================================
