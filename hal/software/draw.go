@@ -4,6 +4,7 @@ package software
 
 import (
 	"encoding/binary"
+	"log/slog"
 	"math"
 
 	"github.com/gogpu/gputypes"
@@ -517,6 +518,23 @@ func (r *RenderPassEncoder) executeSPIRVDraw(target *Texture, vertexCount, first
 
 	if !hasVertexIndex || !hasPosition {
 		return false
+	}
+
+	// Check ALL module-level variables (not just EntryPoint InterfaceIDs,
+	// which in SPIR-V < 1.4 omit Uniform/UniformConstant variables).
+	// The interpreter only supports Input/Output/Function storage classes.
+	// Shaders using Uniform, UniformConstant (textures/samplers), or
+	// StorageBuffer require bind group resources that the interpreter
+	// cannot provide — fall back to executeFullscreenBlit.
+	for _, vi := range parsed.Variables {
+		switch vi.StorageClass {
+		case shader.StorageClassUniform,
+			shader.StorageClassUniformConstant,
+			shader.StorageClassStorageBuffer:
+			slog.Debug("software: SPIR-V interpreter cannot handle shader with resource bindings",
+				"entryPoint", vsEntry, "storageClass", vi.StorageClass)
+			return false
+		}
 	}
 
 	// Clear before drawing (triangles may not cover all pixels).
