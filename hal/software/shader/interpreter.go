@@ -103,6 +103,9 @@ func (m *Module) ExecuteWithContext(entryPoint string, ctx *ExecutionContext) (m
 	return outputs, nil
 }
 
+// maxIterations is the safety limit for loop iterations to prevent infinite loops.
+const maxIterations = 100000
+
 // interpreter holds execution state for a single entry point invocation.
 type interpreter struct {
 	module *Module
@@ -114,6 +117,15 @@ type interpreter struct {
 
 	// prevBlock tracks the predecessor block ID for OpPhi resolution.
 	prevBlock uint32
+
+	// iterationCount tracks total branch-back iterations for loop safety.
+	iterationCount int
+
+	// callDepth tracks function call nesting to prevent stack overflow.
+	callDepth int
+
+	// returnValue holds the value from OpReturnValue for function calls.
+	returnValue Value
 }
 
 // initVariables sets up input, output, and function-local variables.
@@ -595,8 +607,11 @@ func (interp *interpreter) run() error {
 			return nil
 
 		case OpReturnValue:
-			// For void-returning entry points this shouldn't happen,
-			// but handle it gracefully.
+			// OpReturnValue: valueID
+			// Store the return value for function call return.
+			if len(inst.Operands) >= 1 {
+				interp.returnValue = interp.values[inst.Operands[0]]
+			}
 			return nil
 
 		case OpBranch:
@@ -606,14 +621,27 @@ func (interp *interpreter) run() error {
 			}
 			targetLabel := inst.Operands[0]
 			if idx, ok := interp.labels[targetLabel]; ok {
+				// Track predecessor block for OpPhi.
+				interp.prevBlock = interp.currentBlockLabel(pc - 1)
+				// Detect backward branches (loops) and enforce iteration limit.
+				if idx < pc {
+					interp.iterationCount++
+					if interp.iterationCount > maxIterations {
+						return fmt.Errorf("spirv: exceeded maximum iterations (%d)", maxIterations)
+					}
+				}
 				pc = idx + 1 // +1 to skip the label instruction itself
 			}
 
 		case OpFunctionParameter, OpFunctionEnd:
 			// No-op during execution.
 
-		case OpSelectionMerge, OpLoopMerge:
-			// Structured control flow hints — no-op for the interpreter.
+		case OpSelectionMerge:
+			// Selection merge hint -- no-op for the interpreter.
+
+		case OpLoopMerge:
+			// Loop merge hint -- no-op. Operands: merge block, continue target, loop control.
+			// The actual loop is driven by OpBranchConditional.
 
 		case OpBranchConditional:
 			if len(inst.Operands) >= 3 {
@@ -625,6 +653,13 @@ func (interp *interpreter) run() error {
 					target = trueLabel
 				}
 				if idx, ok := interp.labels[target]; ok {
+					interp.prevBlock = interp.currentBlockLabel(pc - 1)
+					if idx < pc {
+						interp.iterationCount++
+						if interp.iterationCount > maxIterations {
+							return fmt.Errorf("spirv: exceeded maximum iterations (%d)", maxIterations)
+						}
+					}
 					pc = idx + 1
 				}
 			}
@@ -691,8 +726,66 @@ func (interp *interpreter) run() error {
 			}
 
 		case OpPhi:
-			// Phi nodes are not needed for the triangle shader (single basic block per branch).
-			// For safety, treat as no-op and let the value remain from whichever predecessor ran.
+			// OpPhi: type resultID (value parent)...
+			// Select the value corresponding to the predecessor block we came from.
+			if len(inst.Operands) >= 2 {
+				// Operands are pairs: [value0, parent0, value1, parent1, ...]
+				var resolved bool
+				for i := 0; i+1 < len(inst.Operands); i += 2 {
+					valID := inst.Operands[i]
+					parentLabel := inst.Operands[i+1]
+					if parentLabel == interp.prevBlock {
+						interp.values[inst.ResultID] = interp.values[valID]
+						resolved = true
+						break
+					}
+				}
+				// Fallback: if no matching parent found, use the first value.
+				if !resolved && len(inst.Operands) >= 2 {
+					interp.values[inst.ResultID] = interp.values[inst.Operands[0]]
+				}
+			}
+
+		case OpSwitch:
+			// OpSwitch: selector default (literal target)...
+			// Operands: selector, defaultLabel, lit0, target0, lit1, target1, ...
+			if len(inst.Operands) >= 2 {
+				selector := toUint32(interp.values[inst.Operands[0]])
+				defaultLabel := inst.Operands[1]
+				target := defaultLabel
+				for i := 2; i+1 < len(inst.Operands); i += 2 {
+					lit := inst.Operands[i]
+					lbl := inst.Operands[i+1]
+					if selector == lit {
+						target = lbl
+						break
+					}
+				}
+				if idx, ok := interp.labels[target]; ok {
+					interp.prevBlock = interp.currentBlockLabel(pc - 1)
+					pc = idx + 1
+				}
+			}
+
+		case OpFunctionCall:
+			// OpFunctionCall: type resultID function arg0 arg1 ...
+			if len(inst.Operands) >= 1 {
+				funcID := inst.Operands[0]
+				args := inst.Operands[1:]
+				result, err := interp.callFunction(funcID, args)
+				if err != nil {
+					return err
+				}
+				interp.values[inst.ResultID] = result
+			}
+
+		case OpKill:
+			// Fragment shader discard -- stop execution with no error.
+			return nil
+
+		case OpUnreachable:
+			// Should never be reached in valid SPIR-V.
+			return fmt.Errorf("spirv: executed OpUnreachable")
 
 		case OpVectorTimesScalar:
 			// OpVectorTimesScalar: type resultID vector scalar
@@ -1029,6 +1122,90 @@ func (interp *interpreter) run() error {
 	}
 
 	return nil
+}
+
+// currentBlockLabel returns the label ID of the basic block containing the
+// instruction at the given index. This is used for OpPhi predecessor tracking.
+func (interp *interpreter) currentBlockLabel(instIdx int) uint32 {
+	// Walk backward from instIdx to find the most recent OpLabel.
+	for i := instIdx; i >= 0; i-- {
+		if interp.fn.Instructions[i].Opcode == OpLabel {
+			return interp.fn.Instructions[i].ResultID
+		}
+	}
+	return 0
+}
+
+// maxCallDepth is the maximum function call nesting depth.
+const maxCallDepth = 64
+
+// callFunction invokes a non-entry-point function by ID with the given arguments.
+// Each call creates a fresh value scope (local variables) while sharing the
+// module-level constants and context.
+func (interp *interpreter) callFunction(funcID uint32, argIDs []uint32) (Value, error) {
+	if interp.callDepth >= maxCallDepth {
+		return nil, fmt.Errorf("spirv: exceeded maximum call depth (%d)", maxCallDepth)
+	}
+
+	fn, ok := interp.module.FunctionsByID[funcID]
+	if !ok {
+		return nil, fmt.Errorf("spirv: function %d not found", funcID)
+	}
+
+	// Create a child interpreter with its own value scope.
+	child := &interpreter{
+		module:    interp.module,
+		ep:        interp.ep,
+		fn:        fn,
+		ctx:       interp.ctx,
+		values:    make(map[uint32]Value, interp.module.Bound),
+		labels:    make(map[uint32]int),
+		callDepth: interp.callDepth + 1,
+	}
+
+	// Copy constants.
+	for id, val := range interp.module.Constants {
+		child.values[id] = val
+	}
+
+	// Build label index.
+	for i, inst := range fn.Instructions {
+		if inst.Opcode == OpLabel {
+			child.labels[inst.ResultID] = i
+		}
+	}
+
+	// Bind parameters: find OpFunctionParameter instructions and assign argument values.
+	paramIdx := 0
+	for _, inst := range fn.Instructions {
+		if inst.Opcode == OpFunctionParameter {
+			if paramIdx < len(argIDs) {
+				child.values[inst.ResultID] = interp.values[argIDs[paramIdx]]
+			}
+			paramIdx++
+		}
+	}
+
+	// Copy resource variable bindings from parent so the callee can access buffers.
+	for varID, vi := range interp.module.Variables {
+		if vi.StorageClass == StorageClassUniform || vi.StorageClass == StorageClassStorageBuffer ||
+			vi.StorageClass == StorageClassPushConstant || vi.StorageClass == StorageClassUniformConstant {
+			if v, ok := interp.values[varID]; ok {
+				child.values[varID] = v
+			}
+		}
+	}
+
+	// Execute the callee.
+	if err := child.run(); err != nil {
+		return nil, err
+	}
+
+	// Collect the return value. We look for OpReturnValue which stores
+	// the return value ID in Operands[0].
+	// Since run() returns on OpReturnValue, the last-returned value is
+	// whatever OpReturnValue pointed to.
+	return child.returnValue, nil
 }
 
 // accessChain navigates into a composite value through a chain of indexes,
