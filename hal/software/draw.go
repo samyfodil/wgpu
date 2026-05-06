@@ -28,20 +28,20 @@ func (r *RenderPassEncoder) executeDraw(vertexCount, instanceCount, firstVertex,
 		return
 	}
 
-	// No vertex buffer bound — try SPIR-V shader path or fullscreen blit.
+	// No vertex buffer bound — try fullscreen blit or SPIR-V shader path.
 	if r.vertexBufs[0].buffer == nil {
+		// Fullscreen blit path (FAST): direct memcpy/swizzle from bound texture.
+		// Must be checked BEFORE SPIR-V — memcpy is 100x faster than interpreting
+		// a fragment shader per-pixel (ADR-020: 60 FPS vs 0.65 FPS).
+		if r.executeFullscreenBlit(target) {
+			r.cleared = true
+			return
+		}
+
 		// SPIR-V path: when the pipeline has no vertex buffer layouts but has
 		// a shader module with SPIR-V (e.g. @builtin(vertex_index) triangle),
 		// execute the shader via the interpreter.
 		if r.executeSPIRVDraw(target, vertexCount, instanceCount, firstVertex, firstInstance) {
-			return
-		}
-
-		// Fullscreen blit path: blit bound texture to target.
-		// The blit overwrites every destination pixel, so applyClear is redundant.
-		// Skipping clear saves ~18% CPU (8 MB memset at 1920x1080).
-		if r.executeFullscreenBlit(target) {
-			r.cleared = true
 			return
 		}
 		// No source texture found — apply clear only (clear-only pass).
@@ -519,10 +519,10 @@ func (r *RenderPassEncoder) fetchTrianglesSPIRV(
 			// Build input map for this invocation.
 			inputs := make(map[uint32]shader.Value)
 			if hasVertexIndex {
-				inputs[vertexIndexVarID] = vertexID
+				inputs[vertexIndexVarID] = shader.ValUint(vertexID)
 			}
 			if hasInstanceIndex {
-				inputs[instanceIndexVarID] = instanceID
+				inputs[instanceIndexVarID] = shader.ValUint(instanceID)
 			}
 
 			// Populate @location inputs from vertex buffer data.
@@ -721,31 +721,34 @@ func (r *RenderPassEncoder) buildExecutionContext() *shader.ExecutionContext {
 func floatsToShaderValue(vals []float32) shader.Value {
 	switch len(vals) {
 	case 1:
-		return shader.Float32(vals[0])
+		return shader.ValFloat(vals[0])
 	case 2:
-		return shader.Vec2{vals[0], vals[1]}
+		return shader.ValVec2(vals[0], vals[1])
 	case 3:
-		return shader.Vec3{vals[0], vals[1], vals[2]}
+		return shader.ValVec3(vals[0], vals[1], vals[2])
 	case 4:
-		return shader.Vec4{vals[0], vals[1], vals[2], vals[3]}
+		return shader.ValVec4(vals[0], vals[1], vals[2], vals[3])
 	default:
 		if len(vals) == 0 {
-			return shader.Float32(0)
+			return shader.ValFloat(0)
 		}
-		return shader.Vec4{vals[0], vals[1], vals[2], vals[3]}
+		return shader.ValVec4(vals[0], vals[1], vals[2], vals[3])
 	}
 }
 
 // shaderValueToFloats converts a shader Value into a float32 slice.
 func shaderValueToFloats(val shader.Value) []float32 {
-	switch v := val.(type) {
-	case shader.Float32:
-		return []float32{v}
-	case shader.Vec2:
+	switch val.Tag {
+	case shader.TagFloat32:
+		return []float32{val.F[0]}
+	case shader.TagVec2:
+		v := val.AsVec2()
 		return v[:]
-	case shader.Vec3:
+	case shader.TagVec3:
+		v := val.AsVec3()
 		return v[:]
-	case shader.Vec4:
+	case shader.TagVec4:
+		v := val.AsVec4()
 		return v[:]
 	default:
 		return []float32{0}
@@ -973,10 +976,10 @@ func (r *RenderPassEncoder) executeSPIRVDraw(target *Texture, vertexCount, insta
 			vertexID := firstVertex + vert
 
 			inputs := map[uint32]shader.Value{
-				vertexIndexVarID: vertexID,
+				vertexIndexVarID: shader.ValUint(vertexID),
 			}
 			if hasInstanceIndex {
-				inputs[instanceIndexVarID] = instanceID
+				inputs[instanceIndexVarID] = shader.ValUint(instanceID)
 			}
 
 			ctx.Inputs = inputs
