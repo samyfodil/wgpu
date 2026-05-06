@@ -186,6 +186,42 @@ func needsSwizzle(src, dst gputypes.TextureFormat) bool {
 	return srcBGRA != dstBGRA
 }
 
+// isBGRA returns true when the texture format stores pixels in BGRA byte order.
+// Used to determine whether raster pipeline output (RGBA) needs R↔B swap
+// before writing to the target texture.
+func isBGRA(fmt gputypes.TextureFormat) bool {
+	return fmt == gputypes.TextureFormatBGRA8Unorm || fmt == gputypes.TextureFormatBGRA8UnormSrgb
+}
+
+// writeRasterToTarget copies raster pipeline output (RGBA) into the target texture,
+// swapping R and B channels when the target format is BGRA. This is the single
+// point where all draw paths convert from the raster pipeline's RGBA color buffer
+// to the framebuffer's native byte order.
+func writeRasterToTarget(pipe *raster.Pipeline, target *Texture) {
+	w := pipe.Width()
+	h := pipe.Height()
+	bgra := isBGRA(target.format)
+	target.mu.Lock()
+	for py := 0; py < h; py++ {
+		for px := 0; px < w; px++ {
+			cr, cg, cb, ca := pipe.GetPixel(px, py)
+			idx := (py*w + px) * 4
+			if bgra {
+				target.data[idx+0] = cb // B
+				target.data[idx+1] = cg // G
+				target.data[idx+2] = cr // R
+				target.data[idx+3] = ca // A
+			} else {
+				target.data[idx+0] = cr
+				target.data[idx+1] = cg
+				target.data[idx+2] = cb
+				target.data[idx+3] = ca
+			}
+		}
+	}
+	target.mu.Unlock()
+}
+
 // findBoundTexture searches all bind groups for the first texture view binding.
 func (r *RenderPassEncoder) findBoundTexture() *TextureView {
 	for i := range r.bindGroups {
@@ -255,7 +291,12 @@ func (r *RenderPassEncoder) executeVertexDraw(target *Texture, vertexCount, inst
 	}
 	switch {
 	case hasAttrs:
-		pipe.DrawTrianglesInterpolated(triangles)
+		// Try per-pixel fragment shader first; fall back to direct attribute interpolation.
+		if fragFunc := r.buildFragmentShaderFunc(); fragFunc != nil {
+			pipe.DrawTrianglesWithFragmentShader(triangles, fragFunc)
+		} else {
+			pipe.DrawTrianglesInterpolated(triangles)
+		}
 	case r.hasVertexColors(layouts):
 		pipe.DrawTrianglesInterpolated(triangles)
 	default:
@@ -264,18 +305,7 @@ func (r *RenderPassEncoder) executeVertexDraw(target *Texture, vertexCount, inst
 	}
 
 	// Write raster result back to texture.
-	target.mu.Lock()
-	for py := 0; py < h; py++ {
-		for px := 0; px < w; px++ {
-			cr, cg, cb, ca := pipe.GetPixel(px, py)
-			idx := (py*w + px) * 4
-			target.data[idx+0] = cr
-			target.data[idx+1] = cg
-			target.data[idx+2] = cb
-			target.data[idx+3] = ca
-		}
-	}
-	target.mu.Unlock()
+	writeRasterToTarget(pipe, target)
 }
 
 // fetchTriangles reads vertex data from bound buffers, applies viewport transform,
@@ -843,8 +873,6 @@ func (r *RenderPassEncoder) resolveFragmentColor() [4]float32 {
 // triangle). Populates the interpreter's ExecutionContext with bind group
 // resources (uniform buffers, textures, samplers) so shaders can access them.
 // Returns true if the draw was handled, false if no SPIR-V module is available.
-//
-//nolint:maintidx // SPIR-V draw dispatch with instancing + resource binding is inherently complex.
 func (r *RenderPassEncoder) executeSPIRVDraw(target *Texture, vertexCount, instanceCount, firstVertex, firstInstance uint32) bool {
 	if r.pipeline == nil || r.pipeline.desc == nil {
 		return false
@@ -1002,29 +1030,22 @@ func (r *RenderPassEncoder) executeSPIRVDraw(target *Texture, vertexCount, insta
 		allTriangles = append(allTriangles, instanceTris...)
 	}
 
-	// Choose between interpolated attributes and flat fragment color.
+	// Choose between per-pixel fragment shader, interpolated attributes, and flat color.
 	if hasLocOutputs {
-		pipe.DrawTrianglesInterpolated(allTriangles)
+		if fragFunc := r.buildFragmentShaderFunc(); fragFunc != nil {
+			pipe.DrawTrianglesWithFragmentShader(allTriangles, fragFunc)
+		} else {
+			pipe.DrawTrianglesInterpolated(allTriangles)
+		}
 	} else {
 		fragColor := r.executeSPIRVFragment()
 		pipe.DrawTriangles(allTriangles, fragColor)
 	}
 
-	// Write raster result back to texture in BGRA byte order.
-	// Raster pipeline operates in RGBA; the surface framebuffer is BGRA
+	// Write raster result back to texture.
+	// Raster pipeline operates in RGBA; swap R↔B when the target is BGRA
 	// (required by GDI BitBlt on Windows and X11 ZPixmap on Linux).
-	target.mu.Lock()
-	for py := 0; py < h; py++ {
-		for px := 0; px < w; px++ {
-			cr, cg, cb, ca := pipe.GetPixel(px, py)
-			idx := (py*w + px) * 4
-			target.data[idx+0] = cb // B
-			target.data[idx+1] = cg // G
-			target.data[idx+2] = cr // R
-			target.data[idx+3] = ca // A
-		}
-	}
-	target.mu.Unlock()
+	writeRasterToTarget(pipe, target)
 
 	return true
 }
@@ -1083,4 +1104,105 @@ func (r *RenderPassEncoder) executeSPIRVFragment() [4]float32 {
 	}
 
 	return shader.Vec4ToFloat32(colorVal)
+}
+
+// buildFragmentShaderFunc creates a raster.FragmentShaderFunc that executes
+// the SPIR-V fragment shader per pixel. The returned closure feeds interpolated
+// @location attributes into the fragment shader's input variables and returns
+// the output color.
+//
+// Returns nil if the pipeline has no fragment shader with @location inputs.
+func (r *RenderPassEncoder) buildFragmentShaderFunc() raster.FragmentShaderFunc {
+	if r.pipeline == nil || r.pipeline.desc == nil || r.pipeline.desc.Fragment == nil {
+		return nil
+	}
+
+	fsModule, ok := r.pipeline.desc.Fragment.Module.(*ShaderModule)
+	if !ok || fsModule == nil {
+		return nil
+	}
+
+	parsed := fsModule.ParsedModule()
+	if parsed == nil {
+		return nil
+	}
+
+	fsEntry := r.pipeline.desc.Fragment.EntryPoint
+	ep, ok := parsed.EntryPoints[fsEntry]
+	if !ok || ep.ExecutionModel != shader.ExecutionModelFragment {
+		return nil
+	}
+
+	// Classify fragment shader interface variables.
+	type locationVar struct {
+		varID    uint32
+		location int
+	}
+	var locationInputs []locationVar
+	var colorOutputVarID uint32
+	hasColorOut := false
+
+	for _, varID := range ep.InterfaceIDs {
+		vi, exists := parsed.Variables[varID]
+		if !exists {
+			continue
+		}
+		loc := parsed.GetLocation(varID)
+		if vi.StorageClass == shader.StorageClassInput && loc >= 0 {
+			locationInputs = append(locationInputs, locationVar{varID: varID, location: loc})
+		}
+		if vi.StorageClass == shader.StorageClassOutput && loc == 0 {
+			colorOutputVarID = varID
+			hasColorOut = true
+		}
+	}
+
+	// Only build a per-pixel function when the fragment shader has @location inputs.
+	// Without @location inputs, the shader doesn't consume interpolated varyings
+	// and executeSPIRVFragment (single invocation) is sufficient.
+	if len(locationInputs) == 0 || !hasColorOut {
+		return nil
+	}
+
+	// Build execution context with bind group resources (uniform buffers, textures, etc.).
+	ctx := r.buildExecutionContext()
+
+	return func(attrs []float32) [4]float32 {
+		inputs := make(map[uint32]shader.Value)
+
+		// Feed interpolated attributes into fragment shader @location inputs.
+		// Vertex shader outputs are collected in location order, so attrs is a
+		// flat concatenation of all @location outputs. We distribute them back
+		// to the corresponding fragment input variables based on type width.
+		offset := 0
+		for _, li := range locationInputs {
+			if offset >= len(attrs) {
+				break
+			}
+			// Determine the component count for this location from the type.
+			// Default to vec4 (most common for color varyings).
+			width := parsed.GetTypeComponentCount(li.varID)
+			if width == 0 {
+				width = 4
+			}
+			end := offset + width
+			if end > len(attrs) {
+				end = len(attrs)
+			}
+			inputs[li.varID] = floatsToShaderValue(attrs[offset:end])
+			offset = end
+		}
+
+		ctx.Inputs = inputs
+		outputs, err := parsed.ExecuteWithContext(fsEntry, ctx)
+		if err != nil {
+			return [4]float32{1, 1, 1, 1}
+		}
+
+		colorVal, ok := outputs[colorOutputVarID]
+		if !ok {
+			return [4]float32{1, 1, 1, 1}
+		}
+		return shader.Vec4ToFloat32(colorVal)
+	}
 }

@@ -571,6 +571,28 @@ func (m *Module) GetLocation(varID uint32) int {
 	return -1
 }
 
+// GetTypeComponentCount returns the number of scalar components for the type
+// pointed to by a variable. For vec2 returns 2, vec3 returns 3, vec4 returns 4,
+// scalars return 1. Returns 0 if the variable or type is unknown.
+func (m *Module) GetTypeComponentCount(varID uint32) int {
+	vi, ok := m.Variables[varID]
+	if !ok {
+		return 0
+	}
+	pointee := m.PointeeType(vi.TypeID)
+	if pointee == nil {
+		return 0
+	}
+	switch pointee.Kind {
+	case TypeVector:
+		return int(pointee.Components)
+	case TypeFloat, TypeInt, TypeBool:
+		return 1
+	default:
+		return 0
+	}
+}
+
 // PointeeType dereferences a pointer type, returning the type it points to.
 func (m *Module) PointeeType(ptrTypeID uint32) *TypeInfo {
 	ptrType, ok := m.Types[ptrTypeID]
