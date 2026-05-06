@@ -33,6 +33,17 @@ import (
 // Outputs typically contain:
 //   - position variable ID -> Vec4 value
 func (m *Module) Execute(entryPoint string, inputs map[uint32]Value) (map[uint32]Value, error) {
+	ctx := &ExecutionContext{Inputs: inputs}
+	return m.ExecuteWithContext(entryPoint, ctx)
+}
+
+// ExecuteWithContext runs the named entry point with full resource context.
+// The context provides bound buffers, textures, and samplers for the shader.
+func (m *Module) ExecuteWithContext(entryPoint string, ctx *ExecutionContext) (map[uint32]Value, error) {
+	if ctx == nil {
+		ctx = &ExecutionContext{}
+	}
+
 	ep, ok := m.EntryPoints[entryPoint]
 	if !ok {
 		return nil, fmt.Errorf("spirv: entry point %q not found", entryPoint)
@@ -47,6 +58,7 @@ func (m *Module) Execute(entryPoint string, inputs map[uint32]Value) (map[uint32
 		module: m,
 		ep:     ep,
 		fn:     fn,
+		ctx:    ctx,
 		values: make(map[uint32]Value, m.Bound),
 		labels: make(map[uint32]int),
 	}
@@ -63,8 +75,10 @@ func (m *Module) Execute(entryPoint string, inputs map[uint32]Value) (map[uint32
 		}
 	}
 
-	// Initialize interface variables (inputs/outputs).
+	// Initialize interface variables (inputs/outputs) and resource bindings.
+	inputs := ctx.Inputs
 	interp.initVariables(inputs)
+	interp.initResourceVariables()
 
 	// Execute the function body.
 	if err := interp.run(); err != nil {
@@ -94,8 +108,12 @@ type interpreter struct {
 	module *Module
 	ep     *EntryPoint
 	fn     *Function
+	ctx    *ExecutionContext
 	values map[uint32]Value
 	labels map[uint32]int // label ID -> instruction index
+
+	// prevBlock tracks the predecessor block ID for OpPhi resolution.
+	prevBlock uint32
 }
 
 // initVariables sets up input, output, and function-local variables.
@@ -121,6 +139,282 @@ func (interp *interpreter) initVariables(inputs map[uint32]Value) {
 		case StorageClassOutput:
 			interp.values[varID] = &Pointer{Value: zeroValueForVar(m, vi.TypeID)}
 		}
+	}
+}
+
+// initResourceVariables sets up Uniform/StorageBuffer/UniformConstant variables
+// by reading data from bound buffers in the execution context.
+func (interp *interpreter) initResourceVariables() {
+	m := interp.module
+	ctx := interp.ctx
+	if ctx == nil {
+		return
+	}
+
+	for varID, vi := range m.Variables {
+		switch vi.StorageClass {
+		case StorageClassUniform, StorageClassStorageBuffer, StorageClassPushConstant:
+			bk, hasBind := m.GetBinding(varID)
+			if !hasBind {
+				continue
+			}
+			var bufData []byte
+			if ctx.Buffers != nil {
+				bufData = ctx.Buffers[bk]
+			}
+			if bufData == nil {
+				// No buffer bound -- initialize as zero.
+				interp.values[varID] = &Pointer{Value: zeroValueForVar(m, vi.TypeID)}
+				continue
+			}
+			// Deserialize the buffer data into a structured Value based on the pointee type.
+			pointeeType := m.PointeeType(vi.TypeID)
+			if pointeeType == nil {
+				interp.values[varID] = &Pointer{Value: zeroValueForVar(m, vi.TypeID)}
+				continue
+			}
+			val := interp.readValueFromBuffer(bufData, 0, pointeeType)
+			interp.values[varID] = &Pointer{Value: val}
+
+		case StorageClassUniformConstant:
+			// UniformConstant is used for textures/samplers -- handled separately.
+			bk, hasBind := m.GetBinding(varID)
+			if !hasBind {
+				continue
+			}
+			// Store the binding key as the value so OpLoad can resolve texture/sampler.
+			interp.values[varID] = &Pointer{Value: bk}
+		}
+	}
+}
+
+// readValueFromBuffer deserializes a SPIR-V typed value from raw buffer bytes.
+// offset is the starting byte offset into data.
+func (interp *interpreter) readValueFromBuffer(data []byte, offset uint32, ti *TypeInfo) Value {
+	m := interp.module
+	switch ti.Kind {
+	case TypeFloat:
+		if offset+4 > uint32(len(data)) {
+			return Float32(0)
+		}
+		bits := uint32(data[offset]) | uint32(data[offset+1])<<8 |
+			uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24
+		return Float32(math.Float32frombits(bits))
+
+	case TypeInt:
+		if offset+4 > uint32(len(data)) {
+			if ti.Signed {
+				return Int32(0)
+			}
+			return Uint32(0)
+		}
+		bits := uint32(data[offset]) | uint32(data[offset+1])<<8 |
+			uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24
+		if ti.Signed {
+			return Int32(int32(bits))
+		}
+		return Uint32(bits)
+
+	case TypeBool:
+		if offset+4 > uint32(len(data)) {
+			return false
+		}
+		bits := uint32(data[offset]) | uint32(data[offset+1])<<8 |
+			uint32(data[offset+2])<<16 | uint32(data[offset+3])<<24
+		return bits != 0
+
+	case TypeVector:
+		elemType := m.Types[ti.ElemType]
+		if elemType == nil {
+			return zeroValue(m.Types, ti.ElemType)
+		}
+		elemSize := typeByteSize(m, elemType)
+		switch ti.Components {
+		case 2:
+			var v Vec2
+			for i := uint32(0); i < 2; i++ {
+				f := interp.readValueFromBuffer(data, offset+i*elemSize, elemType)
+				v[i] = toFloat32(f)
+			}
+			return v
+		case 3:
+			var v Vec3
+			for i := uint32(0); i < 3; i++ {
+				f := interp.readValueFromBuffer(data, offset+i*elemSize, elemType)
+				v[i] = toFloat32(f)
+			}
+			return v
+		case 4:
+			var v Vec4
+			for i := uint32(0); i < 4; i++ {
+				f := interp.readValueFromBuffer(data, offset+i*elemSize, elemType)
+				v[i] = toFloat32(f)
+			}
+			return v
+		}
+		return Uint32(0)
+
+	case TypeArray:
+		elemType := m.Types[ti.ElemType]
+		if elemType == nil || ti.Length == 0 {
+			return Array{}
+		}
+		// Use ArrayStride decoration if available, otherwise compute.
+		elemSize := typeByteSize(m, elemType)
+		arr := make(Array, ti.Length)
+		for i := uint32(0); i < ti.Length; i++ {
+			arr[i] = interp.readValueFromBuffer(data, offset+i*elemSize, elemType)
+		}
+		return arr
+
+	case TypeStruct:
+		members := make(Array, len(ti.MemberIDs))
+		// For each struct member, look up its type and use MemberDecorate Offset.
+		structTypeID := interp.findTypeID(ti)
+		for i, memberTypeID := range ti.MemberIDs {
+			memberType := m.Types[memberTypeID]
+			if memberType == nil {
+				members[i] = Uint32(0)
+				continue
+			}
+			memberOffset := m.GetMemberOffset(structTypeID, uint32(i))
+			members[i] = interp.readValueFromBuffer(data, offset+memberOffset, memberType)
+		}
+		return members
+
+	default:
+		return Uint32(0)
+	}
+}
+
+// findTypeID returns the type ID for a given TypeInfo by scanning the type map.
+// This is needed for MemberDecorate lookups which key on the type ID.
+func (interp *interpreter) findTypeID(target *TypeInfo) uint32 {
+	for id, ti := range interp.module.Types {
+		if ti == target {
+			return id
+		}
+	}
+	return 0
+}
+
+// typeByteSize returns the byte size of a SPIR-V type for buffer reads.
+func typeByteSize(m *Module, ti *TypeInfo) uint32 {
+	switch ti.Kind {
+	case TypeFloat:
+		return ti.Width / 8
+	case TypeInt:
+		return ti.Width / 8
+	case TypeBool:
+		return 4 // SPIR-V bools are 32-bit in buffers.
+	case TypeVector:
+		elemType := m.Types[ti.ElemType]
+		if elemType == nil {
+			return 4 * ti.Components
+		}
+		return typeByteSize(m, elemType) * ti.Components
+	case TypeArray:
+		elemType := m.Types[ti.ElemType]
+		if elemType == nil {
+			return 0
+		}
+		return typeByteSize(m, elemType) * ti.Length
+	case TypeStruct:
+		// For structs, sum member sizes (respecting offsets if decorated).
+		var maxEnd uint32
+		for i, memberTypeID := range ti.MemberIDs {
+			memberType := m.Types[memberTypeID]
+			if memberType == nil {
+				continue
+			}
+			memberSize := typeByteSize(m, memberType)
+			// Use the end of this member as candidate for total size.
+			end := uint32(i)*4 + memberSize // fallback without decoration
+			if end > maxEnd {
+				maxEnd = end
+			}
+		}
+		return maxEnd
+	default:
+		return 4
+	}
+}
+
+// writeValueToBuffer serializes a SPIR-V typed value into raw buffer bytes.
+// Used for storage buffer writes via OpStore.
+func writeValueToBuffer(data []byte, offset uint32, val Value) {
+	switch v := val.(type) {
+	case Float32:
+		if offset+4 > uint32(len(data)) {
+			return
+		}
+		bits := math.Float32bits(float32(v))
+		data[offset] = byte(bits)
+		data[offset+1] = byte(bits >> 8)
+		data[offset+2] = byte(bits >> 16)
+		data[offset+3] = byte(bits >> 24)
+	case Uint32:
+		if offset+4 > uint32(len(data)) {
+			return
+		}
+		data[offset] = byte(v)
+		data[offset+1] = byte(v >> 8)
+		data[offset+2] = byte(v >> 16)
+		data[offset+3] = byte(v >> 24)
+	case Int32:
+		if offset+4 > uint32(len(data)) {
+			return
+		}
+		u := uint32(v)
+		data[offset] = byte(u)
+		data[offset+1] = byte(u >> 8)
+		data[offset+2] = byte(u >> 16)
+		data[offset+3] = byte(u >> 24)
+	case Vec2:
+		writeValueToBuffer(data, offset, Float32(v[0]))
+		writeValueToBuffer(data, offset+4, Float32(v[1]))
+	case Vec3:
+		writeValueToBuffer(data, offset, Float32(v[0]))
+		writeValueToBuffer(data, offset+4, Float32(v[1]))
+		writeValueToBuffer(data, offset+8, Float32(v[2]))
+	case Vec4:
+		writeValueToBuffer(data, offset, Float32(v[0]))
+		writeValueToBuffer(data, offset+4, Float32(v[1]))
+		writeValueToBuffer(data, offset+8, Float32(v[2]))
+		writeValueToBuffer(data, offset+12, Float32(v[3]))
+	case Array:
+		off := offset
+		for _, elem := range v {
+			writeValueToBuffer(data, off, elem)
+			off += valueByteSize(elem)
+		}
+	}
+}
+
+// valueByteSize returns the byte size of a runtime Value.
+func valueByteSize(val Value) uint32 {
+	switch v := val.(type) {
+	case Float32:
+		return 4
+	case Uint32:
+		return 4
+	case Int32:
+		return 4
+	case Vec2:
+		return 8
+	case Vec3:
+		return 12
+	case Vec4:
+		return 16
+	case Array:
+		var total uint32
+		for _, elem := range v {
+			total += valueByteSize(elem)
+		}
+		return total
+	default:
+		_ = v
+		return 4
 	}
 }
 
@@ -399,6 +693,275 @@ func (interp *interpreter) run() error {
 		case OpPhi:
 			// Phi nodes are not needed for the triangle shader (single basic block per branch).
 			// For safety, treat as no-op and let the value remain from whichever predecessor ran.
+
+		case OpVectorTimesScalar:
+			// OpVectorTimesScalar: type resultID vector scalar
+			if len(inst.Operands) >= 2 {
+				vec := interp.values[inst.Operands[0]]
+				s := toFloat32(interp.values[inst.Operands[1]])
+				interp.values[inst.ResultID] = vectorTimesScalar(vec, s)
+			}
+
+		case OpDot:
+			// OpDot: type resultID vector1 vector2
+			if len(inst.Operands) >= 2 {
+				interp.values[inst.ResultID] = dotProduct(interp.values[inst.Operands[0]], interp.values[inst.Operands[1]])
+			}
+
+		case OpMatrixTimesVector:
+			// OpMatrixTimesVector: type resultID matrix vector
+			if len(inst.Operands) >= 2 {
+				interp.values[inst.ResultID] = matrixTimesVector(interp.values[inst.Operands[0]], interp.values[inst.Operands[1]])
+			}
+
+		case OpMatrixTimesScalar:
+			// OpMatrixTimesScalar: type resultID matrix scalar
+			if len(inst.Operands) >= 2 {
+				interp.values[inst.ResultID] = matrixTimesScalar(interp.values[inst.Operands[0]], interp.values[inst.Operands[1]])
+			}
+
+		case OpMatrixTimesMatrix:
+			// OpMatrixTimesMatrix: type resultID left right
+			if len(inst.Operands) >= 2 {
+				interp.values[inst.ResultID] = matrixTimesMatrix(interp.values[inst.Operands[0]], interp.values[inst.Operands[1]])
+			}
+
+		case OpTranspose:
+			// OpTranspose: type resultID matrix
+			if len(inst.Operands) >= 1 {
+				interp.values[inst.ResultID] = transposeMatrix(interp.values[inst.Operands[0]])
+			}
+
+		case OpVectorShuffle:
+			// OpVectorShuffle: type resultID vec1 vec2 components...
+			if len(inst.Operands) >= 2 {
+				vec1 := interp.values[inst.Operands[0]]
+				vec2 := interp.values[inst.Operands[1]]
+				components := inst.Operands[2:]
+				interp.values[inst.ResultID] = vectorShuffle(interp.module, inst.TypeID, vec1, vec2, components)
+			}
+
+		case OpCopyObject:
+			// OpCopyObject: type resultID operand
+			if len(inst.Operands) >= 1 {
+				interp.values[inst.ResultID] = interp.values[inst.Operands[0]]
+			}
+
+		case OpSDiv:
+			if len(inst.Operands) >= 2 {
+				a := int32(toUint32(interp.values[inst.Operands[0]]))
+				b := int32(toUint32(interp.values[inst.Operands[1]]))
+				if b != 0 {
+					interp.values[inst.ResultID] = Int32(a / b)
+				} else {
+					interp.values[inst.ResultID] = Int32(0)
+				}
+			}
+
+		case OpUDiv:
+			if len(inst.Operands) >= 2 {
+				a := toUint32(interp.values[inst.Operands[0]])
+				b := toUint32(interp.values[inst.Operands[1]])
+				if b != 0 {
+					interp.values[inst.ResultID] = Uint32(a / b)
+				} else {
+					interp.values[inst.ResultID] = Uint32(0)
+				}
+			}
+
+		case OpSMod:
+			if len(inst.Operands) >= 2 {
+				a := int32(toUint32(interp.values[inst.Operands[0]]))
+				b := int32(toUint32(interp.values[inst.Operands[1]]))
+				if b != 0 {
+					interp.values[inst.ResultID] = Int32(a % b)
+				} else {
+					interp.values[inst.ResultID] = Int32(0)
+				}
+			}
+
+		case OpUMod:
+			if len(inst.Operands) >= 2 {
+				a := toUint32(interp.values[inst.Operands[0]])
+				b := toUint32(interp.values[inst.Operands[1]])
+				if b != 0 {
+					interp.values[inst.ResultID] = Uint32(a % b)
+				} else {
+					interp.values[inst.ResultID] = Uint32(0)
+				}
+			}
+
+		case OpSRem:
+			if len(inst.Operands) >= 2 {
+				a := int32(toUint32(interp.values[inst.Operands[0]]))
+				b := int32(toUint32(interp.values[inst.Operands[1]]))
+				if b != 0 {
+					// SPIR-V SRem: remainder has same sign as dividend.
+					interp.values[inst.ResultID] = Int32(a % b)
+				} else {
+					interp.values[inst.ResultID] = Int32(0)
+				}
+			}
+
+		case OpFMod:
+			if len(inst.Operands) >= 2 {
+				interp.values[inst.ResultID] = floatBinOp(
+					interp.values[inst.Operands[0]], interp.values[inst.Operands[1]],
+					func(a, b float32) float32 {
+						if b == 0 {
+							return 0
+						}
+						// SPIR-V FMod: result has same sign as b (GLSL mod).
+						r := float32(math.Mod(float64(a), float64(b)))
+						if (r > 0 && b < 0) || (r < 0 && b > 0) {
+							r += b
+						}
+						return r
+					})
+			}
+
+		case OpFRem:
+			if len(inst.Operands) >= 2 {
+				interp.values[inst.ResultID] = floatBinOp(
+					interp.values[inst.Operands[0]], interp.values[inst.Operands[1]],
+					func(a, b float32) float32 {
+						if b == 0 {
+							return 0
+						}
+						return float32(math.Remainder(float64(a), float64(b)))
+					})
+			}
+
+		case OpSNegate:
+			if len(inst.Operands) >= 1 {
+				a := int32(toUint32(interp.values[inst.Operands[0]]))
+				interp.values[inst.ResultID] = Int32(-a)
+			}
+
+		case OpConvertFToS:
+			if len(inst.Operands) >= 1 {
+				f := toFloat32(interp.values[inst.Operands[0]])
+				interp.values[inst.ResultID] = Int32(int32(f))
+			}
+
+		case OpSConvert, OpUConvert, OpFConvert:
+			// Type width conversions -- treat as copy for 32-bit only interpreter.
+			if len(inst.Operands) >= 1 {
+				interp.values[inst.ResultID] = interp.values[inst.Operands[0]]
+			}
+
+		case OpULessThan:
+			if len(inst.Operands) >= 2 {
+				a := toUint32(interp.values[inst.Operands[0]])
+				b := toUint32(interp.values[inst.Operands[1]])
+				interp.values[inst.ResultID] = a < b
+			}
+
+		case OpUGreaterThan:
+			if len(inst.Operands) >= 2 {
+				a := toUint32(interp.values[inst.Operands[0]])
+				b := toUint32(interp.values[inst.Operands[1]])
+				interp.values[inst.ResultID] = a > b
+			}
+
+		case OpULessThanEqual:
+			if len(inst.Operands) >= 2 {
+				a := toUint32(interp.values[inst.Operands[0]])
+				b := toUint32(interp.values[inst.Operands[1]])
+				interp.values[inst.ResultID] = a <= b
+			}
+
+		case OpUGreaterThanEqual:
+			if len(inst.Operands) >= 2 {
+				a := toUint32(interp.values[inst.Operands[0]])
+				b := toUint32(interp.values[inst.Operands[1]])
+				interp.values[inst.ResultID] = a >= b
+			}
+
+		case OpSLessThan:
+			if len(inst.Operands) >= 2 {
+				a := int32(toUint32(interp.values[inst.Operands[0]]))
+				b := int32(toUint32(interp.values[inst.Operands[1]]))
+				interp.values[inst.ResultID] = a < b
+			}
+
+		case OpSGreaterThan:
+			if len(inst.Operands) >= 2 {
+				a := int32(toUint32(interp.values[inst.Operands[0]]))
+				b := int32(toUint32(interp.values[inst.Operands[1]]))
+				interp.values[inst.ResultID] = a > b
+			}
+
+		case OpSLessThanEqual:
+			if len(inst.Operands) >= 2 {
+				a := int32(toUint32(interp.values[inst.Operands[0]]))
+				b := int32(toUint32(interp.values[inst.Operands[1]]))
+				interp.values[inst.ResultID] = a <= b
+			}
+
+		case OpSGreaterThanEqual:
+			if len(inst.Operands) >= 2 {
+				a := int32(toUint32(interp.values[inst.Operands[0]]))
+				b := int32(toUint32(interp.values[inst.Operands[1]]))
+				interp.values[inst.ResultID] = a >= b
+			}
+
+		case OpLogicalAnd:
+			if len(inst.Operands) >= 2 {
+				interp.values[inst.ResultID] = toBool(interp.values[inst.Operands[0]]) && toBool(interp.values[inst.Operands[1]])
+			}
+
+		case OpLogicalOr:
+			if len(inst.Operands) >= 2 {
+				interp.values[inst.ResultID] = toBool(interp.values[inst.Operands[0]]) || toBool(interp.values[inst.Operands[1]])
+			}
+
+		case OpLogicalNot:
+			if len(inst.Operands) >= 1 {
+				interp.values[inst.ResultID] = !toBool(interp.values[inst.Operands[0]])
+			}
+
+		case OpBitwiseAnd:
+			if len(inst.Operands) >= 2 {
+				interp.values[inst.ResultID] = intBinOp(interp.values[inst.Operands[0]], interp.values[inst.Operands[1]], func(a, b uint32) uint32 { return a & b })
+			}
+
+		case OpBitwiseOr:
+			if len(inst.Operands) >= 2 {
+				interp.values[inst.ResultID] = intBinOp(interp.values[inst.Operands[0]], interp.values[inst.Operands[1]], func(a, b uint32) uint32 { return a | b })
+			}
+
+		case OpBitwiseXor:
+			if len(inst.Operands) >= 2 {
+				interp.values[inst.ResultID] = intBinOp(interp.values[inst.Operands[0]], interp.values[inst.Operands[1]], func(a, b uint32) uint32 { return a ^ b })
+			}
+
+		case OpNot:
+			if len(inst.Operands) >= 1 {
+				a := toUint32(interp.values[inst.Operands[0]])
+				interp.values[inst.ResultID] = Uint32(^a)
+			}
+
+		case OpShiftLeftLogical:
+			if len(inst.Operands) >= 2 {
+				interp.values[inst.ResultID] = intBinOp(interp.values[inst.Operands[0]], interp.values[inst.Operands[1]], func(a, b uint32) uint32 { return a << (b & 31) })
+			}
+
+		case OpShiftRightLogical:
+			if len(inst.Operands) >= 2 {
+				interp.values[inst.ResultID] = intBinOp(interp.values[inst.Operands[0]], interp.values[inst.Operands[1]], func(a, b uint32) uint32 { return a >> (b & 31) })
+			}
+
+		case OpShiftRightArithmetic:
+			if len(inst.Operands) >= 2 {
+				a := int32(toUint32(interp.values[inst.Operands[0]]))
+				b := toUint32(interp.values[inst.Operands[1]]) & 31
+				interp.values[inst.ResultID] = Int32(a >> b)
+			}
+
+		case OpUndef:
+			// OpUndef produces an undefined value -- use zero.
+			interp.values[inst.ResultID] = Uint32(0)
 
 		default:
 			// Unknown opcodes are skipped. The triangle shader uses a small subset.
@@ -697,4 +1260,208 @@ func Vec4ToFloat32(val Value) [4]float32 {
 // Used for SPIR-V constant encoding in tests.
 func Float32BitsToUint32(f float32) uint32 {
 	return math.Float32bits(f)
+}
+
+// vectorTimesScalar multiplies each component of a vector by a scalar.
+func vectorTimesScalar(vec Value, s float32) Value {
+	switch v := vec.(type) {
+	case Vec2:
+		return Vec2{v[0] * s, v[1] * s}
+	case Vec3:
+		return Vec3{v[0] * s, v[1] * s, v[2] * s}
+	case Vec4:
+		return Vec4{v[0] * s, v[1] * s, v[2] * s, v[3] * s}
+	default:
+		return Float32(toFloat32(vec) * s)
+	}
+}
+
+// dotProduct computes the dot product of two vectors.
+func dotProduct(a, b Value) Value {
+	switch av := a.(type) {
+	case Vec2:
+		bv, ok := b.(Vec2)
+		if !ok {
+			return Float32(0)
+		}
+		return Float32(av[0]*bv[0] + av[1]*bv[1])
+	case Vec3:
+		bv, ok := b.(Vec3)
+		if !ok {
+			return Float32(0)
+		}
+		return Float32(av[0]*bv[0] + av[1]*bv[1] + av[2]*bv[2])
+	case Vec4:
+		bv, ok := b.(Vec4)
+		if !ok {
+			return Float32(0)
+		}
+		return Float32(av[0]*bv[0] + av[1]*bv[1] + av[2]*bv[2] + av[3]*bv[3])
+	default:
+		return Float32(toFloat32(a) * toFloat32(b))
+	}
+}
+
+// matrixTimesVector multiplies a matrix (Array of column vectors) by a vector.
+// SPIR-V stores matrices in column-major order as arrays of column vectors.
+func matrixTimesVector(mat, vec Value) Value {
+	cols, ok := mat.(Array)
+	if !ok {
+		return vec
+	}
+	v, ok := vec.(Vec4)
+	if !ok {
+		return vec
+	}
+	numCols := len(cols)
+	if numCols < 2 {
+		return vec
+	}
+
+	// Extract columns as Vec4 (padding with zeros if needed).
+	colVecs := make([]Vec4, numCols)
+	for i, c := range cols {
+		colVecs[i] = Vec4ToFloat32(c)
+	}
+
+	// result = col[0]*v[0] + col[1]*v[1] + ...
+	var result Vec4
+	for i := 0; i < numCols && i < 4; i++ {
+		for j := 0; j < 4; j++ {
+			result[j] += colVecs[i][j] * v[i]
+		}
+	}
+	return result
+}
+
+// matrixTimesScalar multiplies every element of a matrix by a scalar.
+func matrixTimesScalar(mat, scalar Value) Value {
+	cols, ok := mat.(Array)
+	if !ok {
+		return mat
+	}
+	s := toFloat32(scalar)
+	result := make(Array, len(cols))
+	for i, c := range cols {
+		result[i] = vectorTimesScalar(c, s)
+	}
+	return result
+}
+
+// matrixTimesMatrix multiplies two matrices (both stored as Array of column vectors).
+// C = A * B means C[j] = A * B[j] for each column j of B.
+func matrixTimesMatrix(left, right Value) Value {
+	rightCols, ok := right.(Array)
+	if !ok {
+		return right
+	}
+	result := make(Array, len(rightCols))
+	for j, col := range rightCols {
+		result[j] = matrixTimesVector(left, col)
+	}
+	return result
+}
+
+// transposeMatrix transposes a matrix stored as Array of column vectors.
+func transposeMatrix(mat Value) Value {
+	cols, ok := mat.(Array)
+	if !ok {
+		return mat
+	}
+	numCols := len(cols)
+	if numCols == 0 {
+		return mat
+	}
+
+	// Determine the number of rows from the first column.
+	var numRows int
+	switch cols[0].(type) {
+	case Vec2:
+		numRows = 2
+	case Vec3:
+		numRows = 3
+	case Vec4:
+		numRows = 4
+	default:
+		return mat
+	}
+
+	// Build transposed columns (each row of the original becomes a column).
+	result := make(Array, numRows)
+	for r := 0; r < numRows; r++ {
+		var row Vec4
+		for c := 0; c < numCols && c < 4; c++ {
+			row[c] = toFloat32(indexComposite(cols[c], uint32(r)))
+		}
+		// Return the correct vector type based on column count.
+		switch numCols {
+		case 2:
+			result[r] = Vec2{row[0], row[1]}
+		case 3:
+			result[r] = Vec3{row[0], row[1], row[2]}
+		default:
+			result[r] = row
+		}
+	}
+	return result
+}
+
+// vectorShuffle creates a new vector by selecting components from two input vectors.
+// Components are literal indices where 0..N-1 select from vec1 and N..2N-1 from vec2.
+// A component value of 0xFFFFFFFF means the result component is undefined (zero).
+func vectorShuffle(m *Module, typeID uint32, vec1, vec2 Value, components []uint32) Value {
+	// Flatten both vectors into a combined component array.
+	var pool []float32
+	pool = appendComponents(pool, vec1)
+	n1 := uint32(len(pool))
+	pool = appendComponents(pool, vec2)
+	total := uint32(len(pool))
+
+	var out []float32
+	for _, idx := range components {
+		if idx == 0xFFFFFFFF || idx >= total {
+			out = append(out, 0) // Undefined component.
+		} else if idx < n1 {
+			out = append(out, pool[idx])
+		} else {
+			out = append(out, pool[idx])
+		}
+	}
+
+	// Determine result type from the module type info.
+	ti := m.Types[typeID]
+	if ti != nil && ti.Kind == TypeVector {
+		switch ti.Components {
+		case 2:
+			var v Vec2
+			for i := 0; i < 2 && i < len(out); i++ {
+				v[i] = out[i]
+			}
+			return v
+		case 3:
+			var v Vec3
+			for i := 0; i < 3 && i < len(out); i++ {
+				v[i] = out[i]
+			}
+			return v
+		case 4:
+			var v Vec4
+			for i := 0; i < 4 && i < len(out); i++ {
+				v[i] = out[i]
+			}
+			return v
+		}
+	}
+
+	// Fallback: infer from component count.
+	switch len(out) {
+	case 2:
+		return Vec2{out[0], out[1]}
+	case 3:
+		return Vec3{out[0], out[1], out[2]}
+	case 4:
+		return Vec4{out[0], out[1], out[2], out[3]}
+	default:
+		return Float32(0)
+	}
 }
