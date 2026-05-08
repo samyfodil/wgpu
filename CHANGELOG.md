@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.27.1] - 2026-05-08
 
 ### Fixed
 
@@ -38,8 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Dependencies
 
-- **naga** v0.17.11 → **v0.17.12** — ARCH-001 internal packages, 12/18 coverage ≥80%,
-  13 panics→errors.
+- **naga** v0.17.11 → **v0.17.13** — DXIL PHI ordering fix, ARCH-001 internal packages,
+  ~60% test coverage, 13 panics→errors, public API real types.
 
 ## [0.27.0] - 2026-05-06
 

@@ -260,7 +260,7 @@ func (r *RenderPassEncoder) executeVertexDraw(target *Texture, vertexCount, inst
 	h := int(target.height)
 
 	pipe := raster.NewPipeline(w, h)
-	r.configureRasterPipeline(pipe, w, h)
+	r.configureRasterPipeline(pipe)
 
 	// Copy current framebuffer into the raster pipeline so draws composite.
 	target.mu.RLock()
@@ -996,7 +996,7 @@ func (r *RenderPassEncoder) executeSPIRVDraw(target *Texture, vertexCount, insta
 	h := int(target.height)
 
 	pipe := raster.NewPipeline(w, h)
-	r.configureRasterPipeline(pipe, w, h)
+	r.configureRasterPipeline(pipe)
 
 	// Copy current framebuffer so draws composite correctly.
 	target.mu.RLock()
@@ -1282,7 +1282,7 @@ func clampBlitBounds(minX, minY, maxX, maxY int, scissor [4]uint32) (int, int, i
 // configureRasterPipeline applies scissor, depth, and stencil state from the
 // command encoder to a newly created raster.Pipeline. This is the single point
 // where WebGPU render pass state is translated to the raster package's config.
-func (r *RenderPassEncoder) configureRasterPipeline(pipe *raster.Pipeline, w, h int) {
+func (r *RenderPassEncoder) configureRasterPipeline(pipe *raster.Pipeline) {
 	// Scissor: clip fragments to the scissor rectangle set by SetScissorRect.
 	if r.hasScissor {
 		pipe.SetScissor(&raster.Rect{
