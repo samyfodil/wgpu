@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.1] - 2026-05-08
+
+### Fixed
+
+- **Vulkan offscreen texture trail artifacts** (BUG-WGPU-VK-007) — offscreen textures with
+  `TextureBinding` usage were left in `COLOR_ATTACHMENT_OPTIMAL` layout after render pass.
+  When subsequently sampled by a fragment shader, Intel CCS (Color Compression Subsystem)
+  metadata was not decompressed → stale pixels → visual trails. Fix: `offscreenFinalLayout()`
+  returns `IMAGE_LAYOUT_GENERAL` for mixed-usage textures (render + sample), matching Rust
+  wgpu `derive_image_layout()` behavior.
+
+- **Vulkan MSAA resolve target stale pixels** (BUG-WGPU-MSAA-RESOLVE-001) — resolve
+  attachment had `LoadOp=DONT_CARE`, leaving uncovered pixels with previous frame content
+  (trail artifacts). Fix: `LoadOp=CLEAR` with MSAA clear color, matching Rust wgpu.
+  Only Vulkan affected — DX12/GLES/Metal/Software already resolve all pixels.
+- **Software: persistent stencil buffer** (BUG-SW-005) — stencil buffer was recreated per
+  Draw() call, losing stencil writes from previous draws within the same render pass. On GPU
+  the stencil buffer is the depth/stencil attachment texture — persistent for the entire pass.
+  Fix: create once at BeginRenderPass, reuse for all Draw() calls. Enables stencil-based
+  clipping (gg clip_demo rounded rect clip).
+
+### Added
+
+- **Software: OpTypeMatrix in SPIR-V interpreter** (BUG-SW-003) — `mat4x4<f32>` uniform
+  support. Enables textured_quad shader execution (ortho projection matrix). Required for
+  offscreen texture compositing on software backend.
+- **Software: SamplerBinding in CreateBindGroup** (BUG-SW-004) — sampler resources now
+  registered and wired into SPIR-V ExecutionContext for correct texture filtering.
+- **Damage rect pixel-level tests** — 29 tests + 3 benchmarks: partial blit correctness,
+  BGRA byte order, rect clipping, integration with multiple Present calls.
+
+### Dependencies
+
+- **naga** v0.17.11 → **v0.17.13** — DXIL PHI ordering fix, ARCH-001 internal packages,
+  ~60% test coverage, 13 panics→errors, public API real types.
+
 ## [0.27.0] - 2026-05-06
 
 ### Added

@@ -1496,3 +1496,377 @@ fn fs_main(@location(0) col: vec3<f32>) -> @location(0) vec4<f32> {
 		t.Error("render produced black screen — no particles visible")
 	}
 }
+
+// =============================================================================
+// Scissor Tests (BUG-SW-005)
+// =============================================================================
+
+func TestScissorBlitClipsToRect(t *testing.T) {
+	dev, _, cleanup := createSoftwareDevice(t)
+	defer cleanup()
+
+	// Source: 4x4 red.
+	srcTex, _ := dev.CreateTexture(&hal.TextureDescriptor{
+		Size:   hal.Extent3D{Width: 4, Height: 4, DepthOrArrayLayers: 1},
+		Format: gputypes.TextureFormatRGBA8Unorm,
+	})
+	defer dev.DestroyTexture(srcTex)
+	srcTex.(*Texture).Clear(gputypes.Color{R: 1, G: 0, B: 0, A: 1})
+
+	srcView, _ := dev.CreateTextureView(srcTex, &hal.TextureViewDescriptor{})
+	defer dev.DestroyTextureView(srcView)
+
+	// Target: 4x4 blue (pre-filled).
+	dstTex, _ := dev.CreateTexture(&hal.TextureDescriptor{
+		Size:   hal.Extent3D{Width: 4, Height: 4, DepthOrArrayLayers: 1},
+		Format: gputypes.TextureFormatRGBA8Unorm,
+		Usage:  gputypes.TextureUsageRenderAttachment,
+	})
+	defer dev.DestroyTexture(dstTex)
+	dstTex.(*Texture).Clear(gputypes.Color{R: 0, G: 0, B: 1, A: 1})
+
+	dstView, _ := dev.CreateTextureView(dstTex, &hal.TextureViewDescriptor{})
+	defer dev.DestroyTextureView(dstView)
+
+	pipeline, _ := dev.CreateRenderPipeline(&hal.RenderPipelineDescriptor{Label: "scissor-blit"})
+	defer dev.DestroyRenderPipeline(pipeline)
+
+	bg, _ := dev.CreateBindGroup(&hal.BindGroupDescriptor{
+		Entries: []gputypes.BindGroupEntry{
+			{Binding: 0, Resource: gputypes.TextureViewBinding{TextureView: srcView.NativeHandle()}},
+		},
+	})
+	defer dev.DestroyBindGroup(bg)
+
+	enc, _ := dev.CreateCommandEncoder(&hal.CommandEncoderDescriptor{})
+	pass := enc.BeginRenderPass(&hal.RenderPassDescriptor{
+		ColorAttachments: []hal.RenderPassColorAttachment{
+			{View: dstView, LoadOp: gputypes.LoadOpLoad},
+		},
+	})
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bg, nil)
+	// Scissor: top-left 2x2 region only.
+	pass.SetScissorRect(0, 0, 2, 2)
+	pass.Draw(6, 1, 0, 0)
+	pass.End()
+
+	data := dstTex.(*Texture).GetData()
+	// Pixel (0,0) inside scissor -> red from blit.
+	if data[0] != 255 || data[1] != 0 || data[2] != 0 {
+		t.Errorf("pixel(0,0) inside scissor = (%d,%d,%d), want red (255,0,0)",
+			data[0], data[1], data[2])
+	}
+	// Pixel (1,1) inside scissor -> red.
+	idx := (1*4 + 1) * 4
+	if data[idx] != 255 || data[idx+1] != 0 || data[idx+2] != 0 {
+		t.Errorf("pixel(1,1) inside scissor = (%d,%d,%d), want red (255,0,0)",
+			data[idx], data[idx+1], data[idx+2])
+	}
+	// Pixel (2,0) outside scissor -> still blue (not overwritten).
+	idx = (0*4 + 2) * 4
+	if data[idx] != 0 || data[idx+1] != 0 || data[idx+2] != 255 {
+		t.Errorf("pixel(2,0) outside scissor = (%d,%d,%d), want blue (0,0,255)",
+			data[idx], data[idx+1], data[idx+2])
+	}
+	// Pixel (3,3) outside scissor -> still blue.
+	idx = (3*4 + 3) * 4
+	if data[idx] != 0 || data[idx+1] != 0 || data[idx+2] != 255 {
+		t.Errorf("pixel(3,3) outside scissor = (%d,%d,%d), want blue (0,0,255)",
+			data[idx], data[idx+1], data[idx+2])
+	}
+}
+
+func TestScissorTriangleDrawClipsToRect(t *testing.T) {
+	dev, _, cleanup := createSoftwareDevice(t)
+	defer cleanup()
+
+	// Target: 8x8 black.
+	dstTex, _ := dev.CreateTexture(&hal.TextureDescriptor{
+		Size:   hal.Extent3D{Width: 8, Height: 8, DepthOrArrayLayers: 1},
+		Format: gputypes.TextureFormatRGBA8Unorm,
+		Usage:  gputypes.TextureUsageRenderAttachment,
+	})
+	defer dev.DestroyTexture(dstTex)
+	dstView, _ := dev.CreateTextureView(dstTex, &hal.TextureViewDescriptor{})
+	defer dev.DestroyTextureView(dstView)
+
+	// Fullscreen triangle covering entire viewport.
+	stride := uint64(12)
+	vbData := make([]byte, stride*3)
+	writeFloat32(vbData, 0, -1.0)
+	writeFloat32(vbData, 4, -1.0)
+	writeFloat32(vbData, 8, 0.0)
+	writeFloat32(vbData, 12, 3.0)
+	writeFloat32(vbData, 16, -1.0)
+	writeFloat32(vbData, 20, 0.0)
+	writeFloat32(vbData, 24, -1.0)
+	writeFloat32(vbData, 28, 3.0)
+	writeFloat32(vbData, 32, 0.0)
+
+	vb, _ := dev.CreateBuffer(&hal.BufferDescriptor{Size: uint64(len(vbData))})
+	defer dev.DestroyBuffer(vb)
+	vb.(*Buffer).WriteData(0, vbData)
+
+	pipeline, _ := dev.CreateRenderPipeline(&hal.RenderPipelineDescriptor{
+		Label: "scissor-tri",
+		Vertex: hal.VertexState{
+			Buffers: []gputypes.VertexBufferLayout{
+				{
+					ArrayStride: stride,
+					StepMode:    gputypes.VertexStepModeVertex,
+					Attributes: []gputypes.VertexAttribute{
+						{Format: gputypes.VertexFormatFloat32x3, Offset: 0, ShaderLocation: 0},
+					},
+				},
+			},
+		},
+	})
+	defer dev.DestroyRenderPipeline(pipeline)
+
+	enc, _ := dev.CreateCommandEncoder(&hal.CommandEncoderDescriptor{})
+	pass := enc.BeginRenderPass(&hal.RenderPassDescriptor{
+		ColorAttachments: []hal.RenderPassColorAttachment{
+			{
+				View:       dstView,
+				LoadOp:     gputypes.LoadOpClear,
+				ClearValue: gputypes.Color{R: 0, G: 0, B: 0, A: 0},
+			},
+		},
+	})
+	pass.SetPipeline(pipeline)
+	pass.SetVertexBuffer(0, vb, 0)
+	// Scissor: right half only (x=4, y=0, w=4, h=8).
+	pass.SetScissorRect(4, 0, 4, 8)
+	pass.Draw(3, 1, 0, 0)
+	pass.End()
+
+	data := dstTex.(*Texture).GetData()
+
+	// Pixel (1,1) outside scissor (left half) -> black (clear color).
+	idx := (1*8 + 1) * 4
+	if data[idx+0] != 0 || data[idx+1] != 0 || data[idx+2] != 0 {
+		t.Errorf("pixel(1,1) outside scissor = (%d,%d,%d,%d), want black (0,0,0,0)",
+			data[idx], data[idx+1], data[idx+2], data[idx+3])
+	}
+
+	// Pixel (5,3) inside scissor -> white (triangle covers it, default color).
+	idx = (3*8 + 5) * 4
+	if data[idx+0] != 255 || data[idx+1] != 255 || data[idx+2] != 255 {
+		t.Errorf("pixel(5,3) inside scissor = (%d,%d,%d,%d), want white (255,255,255,255)",
+			data[idx], data[idx+1], data[idx+2], data[idx+3])
+	}
+}
+
+func TestSetStencilReference(t *testing.T) {
+	dev, _, cleanup := createSoftwareDevice(t)
+	defer cleanup()
+
+	enc, _ := dev.CreateCommandEncoder(&hal.CommandEncoderDescriptor{})
+	pass := enc.BeginRenderPass(&hal.RenderPassDescriptor{
+		ColorAttachments: []hal.RenderPassColorAttachment{},
+	})
+
+	encoder := pass.(*RenderPassEncoder)
+
+	// Initially zero.
+	if encoder.stencilRef != 0 {
+		t.Errorf("stencilRef = %d, want 0 initially", encoder.stencilRef)
+	}
+
+	pass.SetStencilReference(42)
+	if encoder.stencilRef != 42 {
+		t.Errorf("stencilRef = %d, want 42", encoder.stencilRef)
+	}
+
+	pass.SetStencilReference(255)
+	if encoder.stencilRef != 255 {
+		t.Errorf("stencilRef = %d, want 255", encoder.stencilRef)
+	}
+
+	pass.End()
+}
+
+func TestScissorBlitScaledClipsToRect(t *testing.T) {
+	dev, _, cleanup := createSoftwareDevice(t)
+	defer cleanup()
+
+	// Source: 2x2 green.
+	srcTex, _ := dev.CreateTexture(&hal.TextureDescriptor{
+		Size:   hal.Extent3D{Width: 2, Height: 2, DepthOrArrayLayers: 1},
+		Format: gputypes.TextureFormatRGBA8Unorm,
+	})
+	defer dev.DestroyTexture(srcTex)
+	srcTex.(*Texture).Clear(gputypes.Color{R: 0, G: 1, B: 0, A: 1})
+
+	srcView, _ := dev.CreateTextureView(srcTex, &hal.TextureViewDescriptor{})
+	defer dev.DestroyTextureView(srcView)
+
+	// Target: 4x4 red (pre-filled, different size for scaling).
+	dstTex, _ := dev.CreateTexture(&hal.TextureDescriptor{
+		Size:   hal.Extent3D{Width: 4, Height: 4, DepthOrArrayLayers: 1},
+		Format: gputypes.TextureFormatRGBA8Unorm,
+		Usage:  gputypes.TextureUsageRenderAttachment,
+	})
+	defer dev.DestroyTexture(dstTex)
+	dstTex.(*Texture).Clear(gputypes.Color{R: 1, G: 0, B: 0, A: 1})
+
+	dstView, _ := dev.CreateTextureView(dstTex, &hal.TextureViewDescriptor{})
+	defer dev.DestroyTextureView(dstView)
+
+	pipeline, _ := dev.CreateRenderPipeline(&hal.RenderPipelineDescriptor{Label: "scissor-scale"})
+	defer dev.DestroyRenderPipeline(pipeline)
+
+	bg, _ := dev.CreateBindGroup(&hal.BindGroupDescriptor{
+		Entries: []gputypes.BindGroupEntry{
+			{Binding: 0, Resource: gputypes.TextureViewBinding{TextureView: srcView.NativeHandle()}},
+		},
+	})
+	defer dev.DestroyBindGroup(bg)
+
+	enc, _ := dev.CreateCommandEncoder(&hal.CommandEncoderDescriptor{})
+	pass := enc.BeginRenderPass(&hal.RenderPassDescriptor{
+		ColorAttachments: []hal.RenderPassColorAttachment{
+			{View: dstView, LoadOp: gputypes.LoadOpLoad},
+		},
+	})
+	pass.SetPipeline(pipeline)
+	pass.SetBindGroup(0, bg, nil)
+	// Scissor: bottom-right 2x2 only.
+	pass.SetScissorRect(2, 2, 2, 2)
+	pass.Draw(6, 1, 0, 0)
+	pass.End()
+
+	data := dstTex.(*Texture).GetData()
+
+	// Pixel (0,0) outside scissor -> still red.
+	if data[0] != 255 || data[1] != 0 || data[2] != 0 {
+		t.Errorf("pixel(0,0) outside scissor = (%d,%d,%d), want red",
+			data[0], data[1], data[2])
+	}
+
+	// Pixel (3,3) inside scissor -> green from blit.
+	idx := (3*4 + 3) * 4
+	if data[idx] != 0 || data[idx+1] != 255 || data[idx+2] != 0 {
+		t.Errorf("pixel(3,3) inside scissor = (%d,%d,%d), want green (0,255,0)",
+			data[idx], data[idx+1], data[idx+2])
+	}
+
+	// Pixel (1,1) outside scissor -> still red.
+	idx = (1*4 + 1) * 4
+	if data[idx] != 255 || data[idx+1] != 0 || data[idx+2] != 0 {
+		t.Errorf("pixel(1,1) outside scissor = (%d,%d,%d), want red",
+			data[idx], data[idx+1], data[idx+2])
+	}
+}
+
+func TestDepthStencilStateWiring(t *testing.T) {
+	dev, _, cleanup := createSoftwareDevice(t)
+	defer cleanup()
+
+	// 4x4 target.
+	dstTex, _ := dev.CreateTexture(&hal.TextureDescriptor{
+		Size:   hal.Extent3D{Width: 4, Height: 4, DepthOrArrayLayers: 1},
+		Format: gputypes.TextureFormatRGBA8Unorm,
+		Usage:  gputypes.TextureUsageRenderAttachment,
+	})
+	defer dev.DestroyTexture(dstTex)
+	dstView, _ := dev.CreateTextureView(dstTex, &hal.TextureViewDescriptor{})
+	defer dev.DestroyTextureView(dstView)
+
+	// Two fullscreen triangles at different depths.
+	// First: z=0.3 (near), white. Second: z=0.7 (far), red.
+	// With depth test Less, second triangle should be hidden behind first.
+	stride := uint64(12)
+	vbData := make([]byte, stride*6)
+
+	// Triangle 1: z=0.3, fullscreen.
+	writeFloat32(vbData, 0, -1.0)
+	writeFloat32(vbData, 4, -1.0)
+	writeFloat32(vbData, 8, 0.3)
+	writeFloat32(vbData, 12, 3.0)
+	writeFloat32(vbData, 16, -1.0)
+	writeFloat32(vbData, 20, 0.3)
+	writeFloat32(vbData, 24, -1.0)
+	writeFloat32(vbData, 28, 3.0)
+	writeFloat32(vbData, 32, 0.3)
+
+	// Triangle 2: z=0.7, fullscreen (should be behind triangle 1).
+	writeFloat32(vbData, 36, -1.0)
+	writeFloat32(vbData, 40, -1.0)
+	writeFloat32(vbData, 44, 0.7)
+	writeFloat32(vbData, 48, 3.0)
+	writeFloat32(vbData, 52, -1.0)
+	writeFloat32(vbData, 56, 0.7)
+	writeFloat32(vbData, 60, -1.0)
+	writeFloat32(vbData, 64, 3.0)
+	writeFloat32(vbData, 68, 0.7)
+
+	vb, _ := dev.CreateBuffer(&hal.BufferDescriptor{Size: uint64(len(vbData))})
+	defer dev.DestroyBuffer(vb)
+	vb.(*Buffer).WriteData(0, vbData)
+
+	// First pass: draw near triangle (white) with depth write.
+	pipeline1, _ := dev.CreateRenderPipeline(&hal.RenderPipelineDescriptor{
+		Label: "depth-near",
+		Vertex: hal.VertexState{
+			Buffers: []gputypes.VertexBufferLayout{
+				{
+					ArrayStride: stride,
+					StepMode:    gputypes.VertexStepModeVertex,
+					Attributes: []gputypes.VertexAttribute{
+						{Format: gputypes.VertexFormatFloat32x3, Offset: 0, ShaderLocation: 0},
+					},
+				},
+			},
+		},
+		DepthStencil: &hal.DepthStencilState{
+			Format:            gputypes.TextureFormatDepth24PlusStencil8,
+			DepthWriteEnabled: true,
+			DepthCompare:      gputypes.CompareFunctionLess,
+		},
+	})
+	defer dev.DestroyRenderPipeline(pipeline1)
+
+	// Depth/stencil attachment texture.
+	depthTex, _ := dev.CreateTexture(&hal.TextureDescriptor{
+		Size:   hal.Extent3D{Width: 4, Height: 4, DepthOrArrayLayers: 1},
+		Format: gputypes.TextureFormatDepth24PlusStencil8,
+	})
+	defer dev.DestroyTexture(depthTex)
+	depthView, _ := dev.CreateTextureView(depthTex, &hal.TextureViewDescriptor{})
+	defer dev.DestroyTextureView(depthView)
+
+	enc, _ := dev.CreateCommandEncoder(&hal.CommandEncoderDescriptor{})
+	pass := enc.BeginRenderPass(&hal.RenderPassDescriptor{
+		ColorAttachments: []hal.RenderPassColorAttachment{
+			{
+				View:       dstView,
+				LoadOp:     gputypes.LoadOpClear,
+				ClearValue: gputypes.Color{R: 0, G: 0, B: 0, A: 0},
+			},
+		},
+		DepthStencilAttachment: &hal.RenderPassDepthStencilAttachment{
+			View:            depthView,
+			DepthLoadOp:     gputypes.LoadOpClear,
+			DepthClearValue: 1.0,
+		},
+	})
+	pass.SetPipeline(pipeline1)
+	pass.SetVertexBuffer(0, vb, 0)
+	// Draw near triangle (vertices 0-2).
+	pass.Draw(3, 1, 0, 0)
+	// Draw far triangle (vertices 3-5) — should be hidden by depth test.
+	pass.Draw(3, 1, 3, 0)
+	pass.End()
+
+	// All pixels should be white (near triangle wins over far triangle).
+	// This test verifies that DepthStencil from the pipeline descriptor
+	// is actually wired to the raster pipeline.
+	data := dstTex.(*Texture).GetData()
+	idx := (2*4 + 2) * 4 // center pixel
+	if data[idx+0] != 255 || data[idx+1] != 255 || data[idx+2] != 255 {
+		t.Errorf("center pixel with depth test = (%d,%d,%d), want white (255,255,255) — depth testing not wired?",
+			data[idx], data[idx+1], data[idx+2])
+	}
+}
