@@ -329,6 +329,11 @@ import _ "github.com/gogpu/wgpu/hal/software"
 - 8x8 tile-based parallel rendering
 - **SPIR-V interpreter** — executes vertex/fragment/compute shaders on CPU. Designed for shader debugging, CI/CD testing, and GPU-less environments — **not for production rendering** (interpreted, ~100× slower than JIT software renderers like SwiftShader). See [ADR](docs/dev/research/ADR-SPIRV-JIT-VS-INTERPRETER.md).
 
+**Debug & Testing:**
+- Render pass instrumentation: `hal.Logger().Debug()` events + `RenderPassStats` for CI e2e assertions
+- `GetFramebuffer()` pixel readback for headless test verification
+- Damage-aware partial blit with pixel-level test coverage
+
 **Windowed Presentation:**
 - **Windows:** DWM-safe `CreateDIBSection` + `BitBlt` (SDL3/Qt6 pattern), zero-copy into GDI bitmap
 - **Linux X11:** `XPutImage` via goffi (Skia pattern), BGRA = X11 ZPixmap native format

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.3] - 2026-05-11
+
+### Added
+
+- **Software backend: render pass instrumentation** (FEAT-SW-009) — two-level observability:
+  1. `hal.Logger().Debug()` events at BeginRenderPass, SetScissorRect, Draw, End — zero
+     overhead when logger is nop (default). Enable via `GOGPU_LOG=debug`.
+  2. `RenderPassStats` struct via `pass.(*software.RenderPassEncoder).Stats()` — typed
+     assertions for CI e2e tests (DrawCount, HasScissor, ScissorRect, Width, Height, ColorLoadOp).
+
+### Fixed
+
+- **Metal: documented MsgSend void-return pattern** — `_ = MsgSend(obj, Sel("set..."))` is
+  correct for void-returning ObjC selectors. objc_msgSend always returns a register-sized value
+  regardless of method return type. Same pattern as Rust wgpu-hal/metal via objc msg_send! macro.
+
 ## [0.27.2] - 2026-05-10
 
 ### Added
