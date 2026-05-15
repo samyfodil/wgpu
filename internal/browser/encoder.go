@@ -80,6 +80,11 @@ func (e *CommandEncoder) CopyTextureToTexture(source, destination, copySize js.V
 	e.fnCopyTextureToTexture.Invoke(source, destination, copySize)
 }
 
+// ClearBuffer clears a buffer region to zero.
+func (e *CommandEncoder) ClearBuffer(buffer js.Value, offset, size uint64) {
+	e.fnClearBuffer.Invoke(buffer, float64(offset), float64(size))
+}
+
 // Finish completes command recording and returns a CommandBuffer.
 // An optional descriptor (or js.Undefined()) can be passed for the label.
 func (e *CommandEncoder) Finish(desc js.Value) *CommandBuffer {

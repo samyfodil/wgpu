@@ -57,6 +57,36 @@ func (e *CommandEncoder) CopyBufferToBuffer(src *Buffer, srcOffset uint64, dst *
 	)
 }
 
+// CopyBufferToTexture copies data from a buffer to a texture.
+func (e *CommandEncoder) CopyBufferToTexture(src *Buffer, dst *Texture, regions []BufferTextureCopy) {
+	if e.released || src == nil || dst == nil {
+		return
+	}
+	for _, r := range regions {
+		srcObj := browser.BuildImageCopyBuffer(
+			src.browser.Ref(),
+			r.BufferLayout.Offset,
+			r.BufferLayout.BytesPerRow,
+			r.BufferLayout.RowsPerImage,
+		)
+		dstObj := browser.BuildImageCopyTexture(
+			dst.browser.Ref(),
+			r.TextureBase.MipLevel,
+			r.TextureBase.Origin.X, r.TextureBase.Origin.Y, r.TextureBase.Origin.Z,
+		)
+		sizeObj := browser.BuildExtent3D(r.Size.Width, r.Size.Height, r.Size.DepthOrArrayLayers)
+		e.browser.CopyBufferToTexture(srcObj, dstObj, sizeObj)
+	}
+}
+
+// ClearBuffer clears a buffer region to zero.
+func (e *CommandEncoder) ClearBuffer(buffer *Buffer, offset, size uint64) {
+	if e.released || buffer == nil {
+		return
+	}
+	e.browser.ClearBuffer(buffer.browser.Ref(), offset, size)
+}
+
 // CopyTextureToBuffer copies data from a texture to a buffer.
 func (e *CommandEncoder) CopyTextureToBuffer(src *Texture, dst *Buffer, regions []BufferTextureCopy) {
 	if e.released || src == nil || dst == nil {
