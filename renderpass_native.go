@@ -241,7 +241,7 @@ func (p *RenderPassEncoder) DrawIndexed(indexCount, instanceCount, firstIndex ui
 }
 
 // DrawIndirect draws primitives with GPU-generated parameters.
-func (p *RenderPassEncoder) DrawIndirect(buffer *Buffer, offset uint64) { //nolint:dupl // render vs compute use different sentinel errors and arg sizes
+func (p *RenderPassEncoder) DrawIndirect(buffer *Buffer, offset uint64) {
 	if !p.validateDrawState("DrawIndirect") {
 		return
 	}

@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.4] - 2026-05-21
+
+### Added
+
+- **macOS software backend presentation** (PR #187 by @k-chimi) — windowed rendering via
+  CoreGraphics (CALayer `setContents:`) and Metal (CAMetalLayer `nextDrawable` + `replaceRegion`).
+  Dual-path: runtime detection selects CALayer or CAMetalLayer. Damage rects on CALayer,
+  full-blit fallback on CAMetalLayer. Self-contained ObjC bindings with selector caching.
+  Headless CI guard via `os.Stat` before Metal framework load. 1310 LOC. Closes #163.
+  **All 3 desktop platforms now have software backend presentation** (Windows GDI, Linux X11, macOS CG+Metal).
+
+- **GPU dispatch indirect validation** — pre-dispatch compute shader validates workgroup
+  counts against `maxComputeWorkgroupsPerDimension`. Invalid counts produce `(0,0,0)`
+  output, preventing GPU hang/TDR. Matches Rust wgpu-core `indirect_validation/dispatch.rs`.
+
+### Fixed
+
+- **GLES: GPU fence via `glFenceSync`** — replaced atomic-only fake fence (always "complete")
+  with real `glFenceSync`/`glClientWaitSync`. Proper GPU completion tracking. Graceful fallback
+  to atomic mode when GL sync unavailable. Matches Rust wgpu-hal `gles/fence.rs`.
+
+- **GLES: `CopyBufferToTexture`** — was no-op stub. Now uses `GL_PIXEL_UNPACK_BUFFER` (PBO) +
+  `glTexSubImage2D`. Matches Rust wgpu-hal `gles/queue.rs`.
+
+- **GLES: `CopyTextureToTexture`** — was no-op stub. Now uses FBO attach +
+  `glCopyTexSubImage2D`. Matches Rust wgpu-hal `gles/queue.rs`.
+
+- **GLES: timestamp queries** — `CreateQuerySet` was returning `ErrTimestampsNotSupported`.
+  Now creates GL query objects via `glGenQueries`, writes timestamps via `glQueryCounter`.
+  Resolves via `glGetQueryObjectui64v`. Matches Rust wgpu-hal `gles/device.rs`.
+
+- **GLES: adapter capability detection** — replaced 146 LOC of hardcoded defaults with
+  real GL introspection (813 LOC): version/extension probing, 10+ WebGPU features from
+  GL extensions, 30+ limits from `GL_MAX_*` queries, per-format texture capabilities,
+  device type + vendor ID inference. Matches Rust wgpu-hal `gles/adapter.rs`.
+
+- **macOS blit lint fix** — resolved 38 golangci-lint issues in `blit_darwin.go`:
+  errcheck, unconvert, revive, staticcheck, unused. 0 issues on all 3 platforms.
+  - Closes #163.
+
 ## [0.28.3] - 2026-05-17
 
 ### Fixed

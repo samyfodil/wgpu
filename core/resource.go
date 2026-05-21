@@ -123,6 +123,13 @@ type Device struct {
 	// prohibits noCopy types (sync.Once, atomic.Pointer, etc.).
 	// Thread-safety is provided by ErrorScopeManager's internal mutex.
 	errorScopeManager *ErrorScopeManager
+
+	// indirectValidation holds the GPU resources for validating indirect
+	// dispatch workgroup counts. Created at device init, reused for every
+	// DispatchIndirect call. nil if the device does not support compute
+	// or if validation resource creation failed (validation is optional).
+	// Matches Rust wgpu-core Device.indirect_validation (device/resource.rs:264).
+	indirectValidation *IndirectValidation
 }
 
 // Backend returns the backend type of the device's adapter.
@@ -167,6 +174,14 @@ func NewDevice(
 	valid := &atomic.Bool{}
 	valid.Store(true)
 	d.valid = valid
+
+	// Initialize indirect dispatch validation. This creates an internal compute
+	// pipeline that validates workgroup counts before each DispatchIndirect call,
+	// preventing GPU hangs/TDR from invalid indirect buffers.
+	// Matches Rust wgpu-core device/resource.rs:445-454.
+	// Returns nil gracefully if shader compilation or resource creation fails.
+	d.indirectValidation = NewIndirectValidation(halDevice, limits)
+
 	trackResource(uintptr(unsafe.Pointer(d)), "Device") //nolint:gosec // debug tracking uses pointer as unique ID
 	return d
 }
@@ -232,6 +247,15 @@ func (d *Device) Destroy() {
 		d.destroyQueue.FlushAll()
 	}
 
+	// Dispose indirect validation resources before destroying the HAL device.
+	// These are internal GPU resources (shader, pipeline, buffers) that must
+	// be freed while the HAL device is still alive.
+	// Matches Rust wgpu-core device/resource.rs:306-308.
+	if d.indirectValidation != nil {
+		d.indirectValidation.Dispose()
+		d.indirectValidation = nil
+	}
+
 	if d.snatchLock == nil || d.raw == nil {
 		return
 	}
@@ -281,6 +305,13 @@ func (d *Device) TrackerIndices() *TrackerIndexAllocators {
 // Returns nil if the device has no HAL integration.
 func (d *Device) DestroyQueueRef() *DestroyQueue {
 	return d.destroyQueue
+}
+
+// IndirectValidation returns the device's indirect dispatch validation
+// resources. Returns nil if validation is not available (no compute support,
+// or resource creation failed during device init).
+func (d *Device) IndirectValidation() *IndirectValidation {
+	return d.indirectValidation
 }
 
 // ParentAdapter returns the parent adapter for this device.
