@@ -19,7 +19,7 @@
 
 ---
 
-## Current State: v0.28.4
+## Current State: v0.28.5
 
 ✅ **All 5 HAL backends complete** (~127K LOC)
 ✅ **Three-layer WebGPU stack** — wgpu API → wgpu/core → wgpu/hal
@@ -74,7 +74,7 @@
 | Vulkan | Windows, Linux, macOS | ✅ Stable — text, compute, MSAA |
 | Metal | macOS | ✅ Stable — naga MSL 91/91 |
 | DX12 | Windows | ✅ Stable — TDR fixed, PendingWrites, deferred destruction |
-| GLES | Windows, Linux | ✅ Stable — text rendering, SamplerBindMap, texture completeness |
+| GLES | Windows, Linux | ✅ Stable — glFenceSync, copy commands, timestamps, real adapter capabilities, compute barriers |
 | Software | Windows, Linux, macOS | ✅ Stable — windowed presentation (GDI/X11/CG+Metal), SPIR-V interpreter. All 3 desktop platforms. |
 
 → **See [CHANGELOG.md](CHANGELOG.md) for detailed per-version notes**
@@ -149,6 +149,7 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| **v0.28.5** | 2026-05 | GLES: fence+copies+timestamps+adapter capabilities (Rust parity). GPU dispatch indirect validation. |
 | **v0.28.4** | 2026-05 | macOS software blit (PR #187, @k-chimi) — CG + Metal dual path. All 3 desktop platforms complete. |
 | **v0.28.0** | 2026-05 | **Browser WebGPU backend** (WASM-001). Complete `syscall/js` → `navigator.gpu`. 6500 LOC, 5 phases, zero deps. First Pure Go WebGPU in the browser. |
 | **v0.27.5** | 2026-05 | Defensive NULL handle guard in TransitionTextures/Buffers (Vulkan, DX12, public API). Prevents crash on destroyed resource barriers. |

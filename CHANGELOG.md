@@ -16,6 +16,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Headless CI guard via `os.Stat` before Metal framework load. 1310 LOC. Closes #163.
   **All 3 desktop platforms now have software backend presentation** (Windows GDI, Linux X11, macOS CG+Metal).
 
+## [0.28.5] - 2026-05-21
+
+### Fixed
+
+- **GLES: GPU fence via `glFenceSync`** — replaced atomic-only fake fence (always "complete")
+  with real `glFenceSync`/`glClientWaitSync`. Proper GPU completion tracking. Graceful fallback
+  to atomic mode when GL sync unavailable. Matches Rust wgpu-hal `gles/fence.rs`.
+
+- **GLES: `CopyBufferToTexture`** — was no-op stub. Now uses `GL_PIXEL_UNPACK_BUFFER` (PBO) +
+  `glTexSubImage2D`. Matches Rust wgpu-hal `gles/queue.rs`.
+
+- **GLES: `CopyTextureToTexture`** — was no-op stub. Now uses FBO attach +
+  `glCopyTexSubImage2D`. Matches Rust wgpu-hal `gles/queue.rs`.
+
+- **GLES: timestamp queries** — `CreateQuerySet` was returning `ErrTimestampsNotSupported`.
+  Now creates GL query objects via `glGenQueries`, writes timestamps via `glQueryCounter`.
+  Resolves via `glGetQueryObjectui64v`. Matches Rust wgpu-hal `gles/device.rs`.
+
+- **GLES: adapter capability detection** — replaced 146 LOC of hardcoded defaults with
+  real GL introspection (813 LOC): version/extension probing, 10+ WebGPU features from
+  GL extensions, 30+ limits from `GL_MAX_*` queries, per-format texture capabilities,
+  device type + vendor ID inference. Matches Rust wgpu-hal `gles/adapter.rs`.
+
+- **GPU dispatch indirect validation** — pre-dispatch compute shader validates workgroup
+  counts against `maxComputeWorkgroupsPerDimension`. Invalid counts produce `(0,0,0)`
+  output, preventing GPU hang/TDR. Matches Rust wgpu-core `indirect_validation/dispatch.rs`.
+
 ## [0.28.4] - 2026-05-21
 
 ### Added
