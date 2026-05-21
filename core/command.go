@@ -877,6 +877,14 @@ func (p *CoreComputePassEncoder) RawPass() hal.ComputePassEncoder {
 	return p.raw
 }
 
+// ReplaceRawPass replaces the underlying HAL compute pass encoder.
+// Used by indirect dispatch validation which ends/re-begins the HAL pass
+// to insert barriers between the validation dispatch and the user dispatch.
+// The caller is responsible for ensuring the old pass was properly ended.
+func (p *CoreComputePassEncoder) ReplaceRawPass(newPass hal.ComputePassEncoder) {
+	p.raw = newPass
+}
+
 // SetPipeline sets the compute pipeline.
 func (p *CoreComputePassEncoder) SetPipeline(pipeline *ComputePipeline) {
 	if p.ended {
