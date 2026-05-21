@@ -11,12 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **macOS software backend presentation** (PR #187 by @k-chimi) — windowed rendering via
   CoreGraphics (CALayer `setContents:`) and Metal (CAMetalLayer `nextDrawable` + `replaceRegion`).
-  Dual-path: runtime detection selects CALayer or CAMetalLayer. Damage rects supported on CALayer,
-  full-blit fallback on CAMetalLayer. Self-contained ObjC bindings with selector caching (`sync.Map`).
+  Dual-path: runtime detection selects CALayer or CAMetalLayer. Damage rects on CALayer,
+  full-blit fallback on CAMetalLayer. Self-contained ObjC bindings with selector caching.
   Headless CI guard via `os.Stat` before Metal framework load. 1310 LOC. Closes #163.
   **All 3 desktop platforms now have software backend presentation** (Windows GDI, Linux X11, macOS CG+Metal).
 
-## [0.28.5] - 2026-05-21
+- **GPU dispatch indirect validation** — pre-dispatch compute shader validates workgroup
+  counts against `maxComputeWorkgroupsPerDimension`. Invalid counts produce `(0,0,0)`
+  output, preventing GPU hang/TDR. Matches Rust wgpu-core `indirect_validation/dispatch.rs`.
 
 ### Fixed
 
@@ -39,22 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   GL extensions, 30+ limits from `GL_MAX_*` queries, per-format texture capabilities,
   device type + vendor ID inference. Matches Rust wgpu-hal `gles/adapter.rs`.
 
-- **GPU dispatch indirect validation** — pre-dispatch compute shader validates workgroup
-  counts against `maxComputeWorkgroupsPerDimension`. Invalid counts produce `(0,0,0)`
-  output, preventing GPU hang/TDR. Matches Rust wgpu-core `indirect_validation/dispatch.rs`.
-
-## [0.28.4] - 2026-05-21
-
-### Added
-
-- **macOS software backend windowed presentation** (PR #187 by @k-chimi) — `blit_darwin.go`
-  (1310 LOC). Dual-path architecture:
-  - **CALayer:** CGImage via `CGImageCreate` + `setContents:` + `setNeedsDisplay`
-  - **CAMetalLayer:** Metal `nextDrawable` + `replaceRegion` + `presentDrawable` + `commit`
-  - Damage rects: CALayer partial update via `setNeedsDisplayInRect:`, CAMetalLayer full blit fallback
-  - Self-contained ObjC bindings with selector caching (`sync.Map`)
-  - Headless CI guard: `os.Stat` check before Metal framework load
-  - **All 3 desktop platforms now have software backend presentation** (Windows GDI, Linux X11, macOS CG/Metal)
+- **macOS blit lint fix** — resolved 38 golangci-lint issues in `blit_darwin.go`:
+  errcheck, unconvert, revive, staticcheck, unused. 0 issues on all 3 platforms.
   - Closes #163.
 
 ## [0.28.3] - 2026-05-17
