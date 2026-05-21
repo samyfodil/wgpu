@@ -19,7 +19,7 @@
 
 ---
 
-## Current State: v0.28.5
+## Current State: v0.28.4
 
 ✅ **All 5 HAL backends complete** (~127K LOC)
 ✅ **Three-layer WebGPU stack** — wgpu API → wgpu/core → wgpu/hal
@@ -149,8 +149,7 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
-| **v0.28.5** | 2026-05 | GLES: fence+copies+timestamps+adapter capabilities (Rust parity). GPU dispatch indirect validation. |
-| **v0.28.4** | 2026-05 | macOS software blit (PR #187, @k-chimi) — CG + Metal dual path. All 3 desktop platforms complete. |
+| **v0.28.4** | 2026-05 | macOS blit (@k-chimi), GLES Rust parity (fence+copies+timestamps+adapter), GPU dispatch indirect validation. |
 | **v0.28.0** | 2026-05 | **Browser WebGPU backend** (WASM-001). Complete `syscall/js` → `navigator.gpu`. 6500 LOC, 5 phases, zero deps. First Pure Go WebGPU in the browser. |
 | **v0.27.5** | 2026-05 | Defensive NULL handle guard in TransitionTextures/Buffers (Vulkan, DX12, public API). Prevents crash on destroyed resource barriers. |
 | **v0.27.4** | 2026-05 | goffi v0.5.1 (struct ABI, XMM return, CGO_ENABLED=1), x/sys v0.44.0, flaky TestThread_CallAsync fix |
