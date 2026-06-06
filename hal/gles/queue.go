@@ -52,7 +52,9 @@ func (q *Queue) Submit(commandBuffers []hal.CommandBuffer) (uint64, error) {
 	// commands being flushed. Flushing first would leave the fence un-flushed.
 	if q.fence != nil {
 		q.fence.Maintain()
-		q.fence.Signal(q.submissionIndex)
+		if err := q.fence.Signal(q.submissionIndex); err != nil {
+			return 0, err
+		}
 	}
 
 	glCtx.Flush()
