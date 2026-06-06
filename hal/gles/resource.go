@@ -6,6 +6,7 @@
 package gles
 
 import (
+	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -263,20 +264,19 @@ func NewFence(glCtx *gl.Context) *Fence {
 // Signal inserts a GL fence sync object into the command stream at the given value.
 // Must be called on the GL thread BEFORE glFlush — the flush sends both the
 // preceding commands and this fence to the GPU together.
+// Returns an error if glFenceSync fails (typically OOM).
 // Matches Rust wgpu-hal/src/gles/fence.rs Fence::signal.
-func (f *Fence) Signal(value uint64) {
+func (f *Fence) Signal(value uint64) error {
 	if f.glCtx == nil || !f.glCtx.SupportsFenceSync() {
-		// Fallback: no fence sync support, mark as immediately complete.
 		f.lastCompleted.Store(value)
-		return
+		return nil
 	}
 	sync := f.glCtx.FenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)
 	if sync == 0 {
-		// Fence creation failed — mark as immediately complete to avoid deadlock.
-		f.lastCompleted.Store(value)
-		return
+		return fmt.Errorf("gles: glFenceSync failed (OOM)")
 	}
 	f.pending = append(f.pending, glFence{sync: sync, value: value})
+	return nil
 }
 
 // GetLatest polls pending sync objects and returns the highest completed value.

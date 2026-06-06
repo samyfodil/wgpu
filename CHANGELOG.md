@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.6] - 2026-06-06
+
+### Fixed
+
+- **GLES: Fence.Signal returns error on glFenceSync failure (Rust parity)** —
+  `Fence.Signal()` silently fell back to marking submissions as immediately
+  complete when `glFenceSync` returned 0 (OOM). Now returns `error`, propagated
+  through `Queue.Submit()`. Matches Rust wgpu-hal `fence.rs:37-52` which returns
+  `Result<(), DeviceError::OutOfMemory>`.
+
 ## [0.29.5] - 2026-06-06
 
 ### Fixed
