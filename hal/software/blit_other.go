@@ -8,6 +8,9 @@ import "image"
 // Windows has GDI (blit_windows.go), Linux has X11 (blit_linux.go).
 type platformBlit struct{}
 
+// configurePlatformBlit is a no-op on unsupported platforms.
+func (s *Surface) configurePlatformBlit() {}
+
 // createPlatformFramebuffer returns nil — use Go heap memory.
 func (s *Surface) createPlatformFramebuffer(_, _ int32) []byte { return nil }
 

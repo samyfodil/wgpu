@@ -173,6 +173,11 @@ func (s *Surface) Configure(_ hal.Device, config *hal.SurfaceConfiguration) erro
 	s.presentMode = config.PresentMode
 	s.alphaMode = config.AlphaMode
 
+	// Detect Wayland and bind wl_shm eagerly on the main thread, before any
+	// render thread calls Present. See BUG-SW-WAYLAND-001: lazy init on first
+	// present called wl_display_roundtrip concurrent with event dispatch → SIGSEGV.
+	s.configurePlatformBlit()
+
 	// Allocate framebuffer. On Windows with a window handle, use CreateDIBSection
 	// (GDI-managed bitmap) for DWM-friendly presentation via BitBlt.
 	// This follows the SDL3/Qt6 enterprise pattern and avoids the DWM freeze

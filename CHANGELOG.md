@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.7] - 2026-06-06
+
+### Fixed
+
+- **Software: eager Wayland wl_shm init in Configure — fix SIGSEGV (gogpu#292)** —
+  `obtainWlShm()` called `wl_display_roundtrip()` on the render thread during first
+  present, concurrent with the main thread's Wayland event dispatch. Two concurrent
+  dispatches on the same `wl_display` corrupt proxy state → SIGSEGV at offset 0x18
+  (`wl_proxy.display` field from NULL). Moved detection + wl_shm binding to
+  `Configure()` on the main thread, before the event loop starts. Enterprise
+  references unanimously do this during init: GLFW (`glfwInit`, `wl_init.c:568`),
+  SDL3 (`SDL_Init`, `SDL_waylandvideo.c:1548`), Qt6 (`QWaylandDisplay()`,
+  `qwaylanddisplay.cpp:531` — explicit comment about this exact race), winit
+  (`EventLoop::new`, `event_loop/mod.rs:92`). Affects both @lkmavi (ARM64 Fedora)
+  and @omer316 (x86_64 Pop!_OS) from gogpu#292.
+
 ## [0.29.6] - 2026-06-06
 
 ### Fixed

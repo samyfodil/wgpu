@@ -84,6 +84,9 @@ func (p *platformBlit) onceInit() bool {
 	return p.isInitialized
 }
 
+// configurePlatformBlit is a no-op on macOS (no Wayland).
+func (s *Surface) configurePlatformBlit() {}
+
 // createPlatformFramebuffer returns nil — use Go heap memory.
 func (s *Surface) createPlatformFramebuffer(_, _ int32) []byte { return nil }
 

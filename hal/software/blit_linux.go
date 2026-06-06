@@ -194,7 +194,34 @@ func initX11() {
 // Embedded in Surface via build tags.
 type platformBlit struct {
 	gc      uintptr          // X11 GC (Graphics Context), lazy-initialized on first blit
-	wlState waylandBlitState // Wayland SHM state (lazy-initialized on first Wayland blit)
+	wlState waylandBlitState // Wayland SHM state, initialized eagerly in Configure
+}
+
+// configurePlatformBlit detects Wayland vs X11 and eagerly obtains wl_shm.
+// Called from Configure() on the MAIN thread, before the event loop or render
+// thread calls Present. This eliminates the race between wl_display_roundtrip
+// (in obtainWlShm) and concurrent wl_display_dispatch (in gogpu event loop).
+//
+// Enterprise references unanimously do this during init, not first present:
+//   - GLFW: wl_shm bound in glfwInit(), fatal error if missing (wl_init.c:568)
+//   - SDL3: wl_shm bound in SDL_Init(SDL_INIT_VIDEO) (SDL_waylandvideo.c:1548)
+//   - Qt6:  wl_shm bound in QWaylandDisplay(), before EventThread.start()
+//     (qwaylanddisplay.cpp:531 — explicit comment about this race)
+//   - winit: wl_shm bound in EventLoop::new(), before calloop (event_loop/mod.rs:92)
+//
+// See BUG-SW-WAYLAND-001: obtainWlShm lazy init → SIGSEGV on Wayland (gogpu#292).
+func (s *Surface) configurePlatformBlit() {
+	if s.displayHandle == 0 {
+		return
+	}
+	if !s.wlState.detected {
+		s.wlState.detected = true
+		s.wlState.isWayland = isWaylandDisplay()
+		if s.wlState.isWayland {
+			s.wlState.wlShm = obtainWlShm(s.displayHandle)
+			s.wlState.shmQueue = createShmQueue(s.displayHandle)
+		}
+	}
 }
 
 // createPlatformFramebuffer returns nil on Linux — we use Go heap memory
@@ -246,21 +273,7 @@ func (s *Surface) blitFramebufferToWindow(data []byte, width, height int32) {
 		return
 	}
 
-	// Detect Wayland vs X11 on first blit. Eagerly obtain wl_shm here
-	// to avoid a wl_display_roundtrip in the present hot path.
-	// NOTE: blitFramebufferToWindow is called on the render thread
-	// (from Queue.Present), not the main thread. Full thread safety
-	// requires gogpu threading model work (BUG-WL-001).
-	if !s.wlState.detected {
-		s.wlState.detected = true
-		s.wlState.isWayland = isWaylandDisplay()
-		if s.wlState.isWayland {
-			s.wlState.wlShm = obtainWlShm(s.displayHandle)
-			s.wlState.shmQueue = createShmQueue(s.displayHandle)
-		}
-	}
-
-	// Route to Wayland SHM path if display is Wayland.
+	// Wayland detected eagerly in Configure (configurePlatformBlit).
 	if s.wlState.isWayland {
 		s.waylandPresent(data, width, height)
 		return
@@ -358,17 +371,7 @@ func (s *Surface) blitDamageRectsToWindow(data []byte, width, height int32, rect
 		return
 	}
 
-	// Detect Wayland vs X11 on first blit (same eager init as blitFramebufferToWindow).
-	if !s.wlState.detected {
-		s.wlState.detected = true
-		s.wlState.isWayland = isWaylandDisplay()
-		if s.wlState.isWayland {
-			s.wlState.wlShm = obtainWlShm(s.displayHandle)
-			s.wlState.shmQueue = createShmQueue(s.displayHandle)
-		}
-	}
-
-	// Route to Wayland SHM damage path if display is Wayland.
+	// Wayland detected eagerly in Configure (configurePlatformBlit).
 	if s.wlState.isWayland {
 		s.waylandPresentDamage(data, width, height, rects)
 		return

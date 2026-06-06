@@ -50,6 +50,9 @@ type platformBlit struct {
 	oldBmp uintptr // previous bitmap (for cleanup)
 }
 
+// configurePlatformBlit is a no-op on Windows (no Wayland).
+func (s *Surface) configurePlatformBlit() {}
+
 // createPlatformFramebuffer creates a DIB section backed by GDI.
 // Returns the DIB pixel buffer as a Go []byte slice (zero-copy).
 // The returned slice is backed by kernel memory, not Go heap — no GC pressure.
