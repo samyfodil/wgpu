@@ -244,11 +244,22 @@ func GetEGLDisplay(nativeDisplay uintptr) (EGLDisplay, WindowKind, *DisplayOwner
 		return display, WindowKindX11, owner, nil
 
 	case WindowKindWayland:
-		// Use the caller's wl_display so EGL shares the same Wayland connection
-		// as the window. Passing 0 would make EGL open a second connection via
-		// wl_display_connect(NULL), causing "Proxy and queue point to different
-		// wl_displays" when eglCreatePlatformWindowSurface tries to register
-		// protocol objects on the app's wl_surface.
+		// Wayland EGL REQUIRES the app's wl_display* — passing 0 opens a second
+		// connection via wl_display_connect(NULL), causing "Proxy and queue point
+		// to different wl_displays" when eglCreateWindowSurface tries to use a
+		// wl_surface* from the app's display on EGL's separate display.
+		//
+		// If nativeDisplay==0 (Instance init, no wl_display* yet), skip Wayland
+		// platform and try surfaceless instead. CreateSurface will call again
+		// with the real wl_display*.
+		if nativeDisplay == 0 {
+			display := GetPlatformDisplay(PlatformSurfacelessMesa, 0, nil)
+			if display != NoDisplay {
+				return display, WindowKindSurfaceless, nil, nil
+			}
+			return NoDisplay, WindowKindUnknown, nil, fmt.Errorf("wayland EGL requires wl_display* (nativeDisplay=0), and surfaceless not available")
+		}
+
 		display := GetPlatformDisplay(PlatformWaylandKHR, nativeDisplay, nil)
 		if display != NoDisplay {
 			return display, WindowKindWayland, nil, nil

@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.12] - 2026-06-08
+
+### Fixed
+
+- **GLES: Wayland EGL nativeDisplay=0 fallback to surfaceless** — `GetEGLDisplay`
+  with `nativeDisplay=0` on Wayland tried `eglGetPlatformDisplay(WAYLAND, 0)` which
+  opens a second `wl_display` connection via `wl_display_connect(NULL)`. Surface's
+  `wl_surface*` is on the app's display → "Proxy and queue point to different
+  wl_displays" crash. Fix: skip Wayland platform when `nativeDisplay=0` (Instance
+  init), fall back to surfaceless. `CreateSurface` calls again with real `wl_display*`.
+  Also: `CreateSurface` Path A skips sharing Instance context when it used surfaceless
+  display (can't create window surface on surfaceless EGL display). Found by @lkmavi.
+
 ## [0.29.11] - 2026-06-08
 
 ### Added
