@@ -90,8 +90,10 @@ type Instance struct {
 // When Instance has no context (Wayland — no wl_display* at init), CreateSurface
 // creates a new EGL context with the caller's displayHandle.
 func (i *Instance) CreateSurface(displayHandle, windowHandle uintptr) (hal.Surface, error) {
-	// Path A: share Instance context (X11/headless — context already exists).
-	if i.eglCtx != nil && i.glCtx != nil {
+	// Path A: share Instance context (X11 — context matches window system).
+	// Do NOT share if Instance context is surfaceless (headless/Wayland fallback)
+	// and Surface needs a window — the EGL display won't support eglCreateWindowSurface.
+	if i.eglCtx != nil && i.glCtx != nil && i.eglCtx.WindowKind() != egl.WindowKindSurfaceless {
 		hal.Logger().Info("gles: surface sharing Instance EGL context")
 		return &Surface{
 			displayHandle: displayHandle,
