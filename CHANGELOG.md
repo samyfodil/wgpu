@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0] - 2026-06-15
+
+### Changed (BREAKING)
+
+- **Unified public API across all build targets (ADR-047)** — 6 divergences fixed
+  between native, Rust, and browser builds. Consumer code now compiles on all targets.
+- **StencilOperation → gputypes** — canonical webgpu.h spec values (uint32, 0x1-based).
+  Was: HAL uint8 iota (0-based) on native, independent uint32 (0-based) on browser.
+  Breaking: numeric values changed (Keep: 0→0x1, Zero: 1→0x2, etc.).
+- **Device.released → atomic.Bool** — fixes data race when Release() called
+  concurrently with CreateBuffer(). Was plain bool.
+- **gpucontext sentinel methods** — `*wgpu.Device` now satisfies `gpucontext.Device`
+  interface (with sentinel). Requires gpucontext v0.20.0.
+
+### Added
+
+- **MinBindGroups = 4** — WebGPU spec guaranteed minimum. Portable code should
+  use ≤4 bind groups. MaxBindGroups (8) is HAL hard cap.
+- **CommandEncoder.CopyBufferToTexture** — WebGPU spec method, was browser-only.
+  Now available on native (routes through HAL).
+- **CommandEncoder.ClearBuffer** — WebGPU spec method, was browser-only.
+  Now available on native.
+- **Browser fence stubs** — DestroyFence, ResetFence, GetFenceStatus, WaitForFence
+  (no-op on browser, matching native signatures).
+- **Browser ComputePipelineDescriptor** — added Constants and
+  ZeroInitializeWorkgroupMemory fields (were native-only).
+- **browser-compute example** — WASM WebGPU compute validation
+  (shader → dispatch → readback).
+
 ## [0.29.16] - 2026-06-15
 
 ### Fixed
