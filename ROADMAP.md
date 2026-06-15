@@ -19,7 +19,7 @@
 
 ---
 
-## Current State: v0.29.15
+## Current State: v0.30.0
 
 ✅ **Triple-backend architecture (ADR-038)** — Native Go, Rust FFI, Browser WASM via build tags
 ✅ **All 5 Native HAL backends complete** (~127K LOC)
@@ -172,6 +172,7 @@ Target: stable, documented, conformant WebGPU implementation in Pure Go.
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| **v0.30.0** | 2026-06 | **BREAKING: Unified public API (ADR-047).** StencilOperation→gputypes, Device.released→atomic.Bool, sentinel methods, MinBindGroups, CopyBufferToTexture+ClearBuffer native, browser fence stubs, browser-compute example. |
 | **v0.29.16** | 2026-06 | HAL wrapper stubs for Rust/Browser builds — public API compiles on all build targets. README updated. |
 | **v0.29.15** | 2026-06 | naga v0.17.15 (HLSL sampler fix, @georgebuilds), x/sys v0.46.0. |
 | **v0.29.14** | 2026-06 | GLES: missing vertexBuffers in Linux pipeline — one-line fix enables full gg rendering (SDF, text, widgets) on GLES Linux. @lkmavi. |
