@@ -33,7 +33,7 @@ queue := device.Queue()
 // Create buffer
 buf, _ := device.CreateBuffer(&wgpu.BufferDescriptor{
     Size:  1024,
-    Usage: gputypes.BufferUsageVertex | gputypes.BufferUsageCopyDst,
+    Usage: wgpu.BufferUsageVertex | wgpu.BufferUsageCopyDst,
 })
 
 // Write data
@@ -63,12 +63,16 @@ wgpu (public API — Device, Queue, Buffer, Texture, Pipeline...)
 | `wgpu/hal/gles` | OpenGL ES backend |
 | `wgpu/hal/software` | CPU software renderer |
 
+## Current Version
+
+v0.30.2 | Go 1.25+ | Dependencies: naga v0.17.15, gpucontext v0.21.0, gputypes v0.5.0
+
 ## Build & Test
 
 ```bash
 go build ./...                    # Pure Go (default)
 go build -tags rust ./...         # Rust FFI backend
-GOOS=js GOARCH=wasm go build ./... # Browser WASM
+GOOS=js GOARCH=wasm go build .    # Browser WASM (root package only, hal excluded)
 
 go test ./...
 golangci-lint run --timeout=5m
