@@ -462,7 +462,7 @@ func (r *RenderPassEncoder) resolveIndices(indexCount, firstIndex uint32, baseVe
 		} else {
 			idx = uint32(data[off]) | uint32(data[off+1])<<8
 		}
-		out[i] = uint32(int32(idx) + baseVertex) //nolint:gosec // index + baseVertex is a valid vertex index
+		out[i] = uint32(int32(idx) + baseVertex)
 	}
 	return out
 }
